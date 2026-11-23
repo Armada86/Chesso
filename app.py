@@ -51,6 +51,7 @@ def game_over(board: chess.Board) -> bool:
 
 
 # ------------------------------------------------------------ captured pieces display
+STRIP_GAP_TOP, STRIP_GAP_BOTTOM = 19.6, -8   # px; tuned so the space above and below the board is equal (~14px)
 AI_MOVE_DELAY = 1.0   # seconds the AI "waits" so you can see your own move first
 
 @functools.lru_cache(maxsize=None)
@@ -59,11 +60,11 @@ def _mini_piece(symbol: str) -> str:
     return " ".join(svg.split())          # single line so Markdown can't break the SVG
 
 
-def _capture_strip(label: str, pieces: list[chess.Piece], lead: int) -> str:
+def _capture_strip(label: str, pieces: list[chess.Piece], lead: int, margin: str) -> str:
     icons = "".join(_mini_piece(p.symbol()) for p in pieces)
     plus = f'<b style="margin-left:6px">+{lead}</b>' if lead > 0 else ""
     return (
-        '<div style="max-width:560px;margin:2px auto;min-height:26px;display:flex;align-items:center;'
+        '<div style="max-width:560px;margin:' + margin + ';min-height:26px;display:flex;align-items:center;'
         'gap:8px;font-size:0.85rem"><span style="opacity:.75;min-width:3.2em">' + label + '</span>'
         '<span style="display:inline-flex;align-items:center;flex-wrap:wrap;background:#e9e4da;color:#333;'
         'border-radius:6px;padding:1px 6px;min-height:24px;min-width:24px">' + icons + plus + '</span></div>'
@@ -76,10 +77,11 @@ def board_with_captures(board: chess.Board, *, key: str, flipped: bool, interact
     top = chess.WHITE if flipped else chess.BLACK
     bottom = not top
     caps, lead = captured_pieces(board), material_lead(board)
-    strip = lambda c: _capture_strip(names[c], caps[c], lead if c == chess.WHITE else -lead)
-    st.markdown(strip(top), unsafe_allow_html=True)
+    strip = lambda c, m: _capture_strip(names[c], caps[c], lead if c == chess.WHITE else -lead, m)
+    # Explicit margins make the space between board and strip identical above and below.
+    st.markdown(strip(top, f"0 auto {STRIP_GAP_TOP}px"), unsafe_allow_html=True)
     move = chess_board(board, key=key, flipped=flipped, interactive=interactive)
-    st.markdown(strip(bottom), unsafe_allow_html=True)
+    st.markdown(strip(bottom, f"{STRIP_GAP_BOTTOM}px auto 0"), unsafe_allow_html=True)
     return move
 
 
