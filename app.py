@@ -6,6 +6,7 @@ import chess.svg
 import streamlit as st
 
 import db
+from board_component import chess_board
 from chess_ai import LEVELS, choose_move
 
 st.set_page_config(page_title="Chesso", page_icon="♞", layout="wide")
@@ -33,29 +34,6 @@ def san_table(board_or_sans):
     for i in range(0, len(sans), 2):
         rows.append(f"{i // 2 + 1}. {sans[i]}" + (f"  {sans[i + 1]}" if i + 1 < len(sans) else ""))
     return "\n".join(rows)
-
-
-def move_input(board: chess.Board, key: str):
-    """From/To picker. Returns a chess.Move when submitted, else None."""
-    legal = list(board.legal_moves)
-    froms = sorted({m.from_square for m in legal})
-    with st.form(f"move_form_{key}", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        src = c1.selectbox("From", [chess.square_name(s) for s in froms], key=f"from_{key}")
-        tos = sorted({m.to_square for m in legal if chess.square_name(m.from_square) == src})
-        dst = c2.selectbox("To", [chess.square_name(s) for s in tos], key=f"to_{key}")
-        promo = c3.selectbox("Promote to", ["Queen", "Rook", "Bishop", "Knight"], key=f"pr_{key}")
-        go = st.form_submit_button("Make move", type="primary", use_container_width=True)
-    if not go:
-        return None
-    frm, to = chess.parse_square(src), chess.parse_square(dst)
-    pt = {"Queen": chess.QUEEN, "Rook": chess.ROOK, "Bishop": chess.BISHOP,
-          "Knight": chess.KNIGHT}[promo]
-    for cand in (chess.Move(frm, to), chess.Move(frm, to, promotion=pt)):
-        if cand in board.legal_moves:
-            return cand
-    st.warning("That move isn't legal from the selected squares. Pick another 'To' square.")
-    return None
 
 
 def status_text(board: chess.Board) -> str:
@@ -104,15 +82,15 @@ def page_vs_ai(engine):
 
     left, right = st.columns([3, 2])
     with left:
-        board_svg(board, flipped=(human == chess.BLACK))
+        live = not game_over(board) and not ss.ai_resigned and board.turn == human
+        mv = chess_board(board, key="ai_board_ui", flipped=(human == chess.BLACK), interactive=live)
+        if mv:
+            board.push(mv)
+            st.rerun()
     with right:
         st.subheader(f"You vs AI - {ss.ai_level}")
         st.info(status_text(board))
         if not game_over(board) and not ss.ai_resigned:
-            mv = move_input(board, "ai")
-            if mv:
-                board.push(mv)
-                st.rerun()
             if st.button("Resign", use_container_width=True):
                 ss.ai_resigned = True
                 st.rerun()
@@ -153,16 +131,15 @@ def page_training(engine):
     board: chess.Board = ss.tr_board
     left, right = st.columns([3, 2])
     with left:
-        board_svg(board, flipped=ss.get("tr_flip", False))
+        mv = chess_board(board, key="tr_board_ui", flipped=ss.get("tr_flip", False),
+                         interactive=not game_over(board))
+        if mv:
+            board.push(mv)
+            ss.tr_redo = []
+            st.rerun()
     with right:
         st.subheader("Training - play both sides")
         st.info(status_text(board))
-        if not game_over(board):
-            mv = move_input(board, "tr")
-            if mv:
-                board.push(mv)
-                ss.tr_redo = []
-                st.rerun()
         c1, c2, c3 = st.columns(3)
         if c1.button("Undo", disabled=not board.move_stack, use_container_width=True):
             ss.tr_redo.append(board.pop())

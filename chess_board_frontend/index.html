@@ -1,0 +1,114 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  html,body{margin:0;padding:0;background:transparent;font-family:sans-serif}
+  #wrap{position:relative;width:100%;max-width:560px;margin:0 auto}
+  #board{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));grid-template-rows:repeat(8,minmax(0,1fr));width:100%;aspect-ratio:1/1;
+         border:2px solid #555;box-sizing:border-box;user-select:none;-webkit-user-select:none;
+         touch-action:manipulation}
+  .sq{position:relative;min-width:0;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;cursor:default}
+  .light{background:#f0d9b5}.dark{background:#b58863}
+  .sq.last{background:#cdd26a}.sq.dark.last{background:#aaa23a}
+  .sq.sel{background:#7fb4ff !important}
+  .sq.check{background:radial-gradient(circle,#ff4d4d 0%,#e03030 40%,transparent 75%),var(--bg)}
+  .sq.movable{cursor:pointer}
+  .sq svg{position:absolute;inset:4%;width:92%;height:92%;pointer-events:none}
+  .dot{position:absolute;width:30%;height:30%;border-radius:50%;background:rgba(20,85,30,.5);pointer-events:none}
+  .ring{position:absolute;inset:4%;border-radius:50%;border:5px solid rgba(20,85,30,.5);pointer-events:none;box-sizing:border-box}
+  .coord{position:absolute;font-size:clamp(8px,2.2vw,12px);font-weight:bold;pointer-events:none;opacity:.7}
+  .coord.f{right:3%;bottom:1%}.coord.r{left:3%;top:1%}
+  #promo{display:none;position:absolute;inset:0;background:rgba(0,0,0,.55);
+         align-items:center;justify-content:center;gap:2%}
+  #promo.show{display:flex}
+  #promo button{width:20%;aspect-ratio:1/1;border:2px solid #444;border-radius:8px;background:#f0d9b5;padding:2%;cursor:pointer}
+  #promo svg{width:100%;height:100%}
+</style></head>
+<body>
+<div id="wrap"><div id="board"></div><div id="promo"></div></div>
+<script>
+const send = (type, extra) => window.parent.postMessage(
+  Object.assign({isStreamlitMessage: true, type: "streamlit:" + type}, extra), "*");
+const FILES = "abcdefgh";
+let A = null, selected = null, lastFen = null, pending = null;
+
+function setHeight(){ send("setFrameHeight", {height: document.getElementById("wrap").offsetHeight + 4}); }
+new ResizeObserver(setHeight).observe(document.getElementById("wrap"));
+
+function sqName(f, r){ return FILES[f] + (r + 1); }
+
+function render(){
+  const boardEl = document.getElementById("board");
+  boardEl.innerHTML = "";
+  const flipped = A.flipped;
+  const pos = A.position;           // {square: symbol}
+  const legal = A.legal || {};      // {from: {to: promoFlag}}
+  const targets = selected && legal[selected] ? legal[selected] : {};
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      const f = flipped ? 7 - col : col;
+      const r = flipped ? row : 7 - row;
+      const name = sqName(f, r);
+      const el = document.createElement("div");
+      const isLight = (f + r) % 2 === 1;
+      el.className = "sq " + (isLight ? "light" : "dark");
+      if (A.last && (A.last[0] === name || A.last[1] === name)) el.classList.add("last");
+      if (A.check === name) { el.classList.add("check"); el.style.setProperty("--bg", isLight ? "#f0d9b5" : "#b58863"); }
+      if (selected === name) el.classList.add("sel");
+      if (legal[name]) el.classList.add("movable");
+      if (pos[name]) el.innerHTML = A.pieces[pos[name]];
+      if (name in targets) {
+        const m = document.createElement("div");
+        m.className = pos[name] ? "ring" : "dot";
+        el.appendChild(m);
+        el.classList.add("movable");
+      }
+      if (row === 7) { const c = document.createElement("span"); c.className = "coord f"; c.textContent = FILES[f]; el.appendChild(c); }
+      if (col === 0) { const c = document.createElement("span"); c.className = "coord r"; c.textContent = r + 1; el.appendChild(c); }
+      el.addEventListener("click", () => onClick(name));
+      boardEl.appendChild(el);
+    }
+  }
+  setHeight();
+}
+
+function emit(from, to, promo){
+  selected = null;
+  send("setComponentValue", {dataType: "json",
+    value: {from, to, promo: promo || null, id: Date.now() + "-" + Math.random().toString(36).slice(2)}});
+  render();
+}
+
+function onClick(name){
+  if (!A.interactive) return;
+  const legal = A.legal || {};
+  if (selected && legal[selected] && name in legal[selected]) {
+    if (legal[selected][name]) { showPromo(selected, name); return; }  // promotion
+    emit(selected, name); return;
+  }
+  selected = (legal[name] && selected !== name) ? name : null;
+  render();
+}
+
+function showPromo(from, to){
+  const el = document.getElementById("promo");
+  el.innerHTML = "";
+  for (const p of ["q", "r", "b", "n"]) {
+    const b = document.createElement("button");
+    b.innerHTML = A.pieces[A.turn_white ? p.toUpperCase() : p];
+    b.onclick = () => { el.classList.remove("show"); emit(from, to, p); };
+    el.appendChild(b);
+  }
+  el.classList.add("show");
+}
+
+window.addEventListener("message", (ev) => {
+  if (ev.data && ev.data.type === "streamlit:render") {
+    A = ev.data.args;
+    if (A.fen !== lastFen) { selected = null; document.getElementById("promo").classList.remove("show"); lastFen = A.fen; }
+    render();
+  }
+});
+send("componentReady", {apiVersion: 1});
+</script>
+</body></html>

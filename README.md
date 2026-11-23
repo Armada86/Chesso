@@ -2,6 +2,7 @@
 
 Streamlit chess app with a Neon (Postgres) database.
 
+- **Click to move** – click a piece (legal destinations get dots), then click where it goes; illegal moves are ignored and pawn promotion shows a picker.
 - **Play vs AI** – 3 levels (Easy / Medium / Hard), pick your colour. Finished games (or resignations) are saved automatically.
 - **Training mode** – move both sides, undo/redo/flip, and save the line with a title.
 - **Saved games** – replay any saved game move by move, download PGN, delete.
