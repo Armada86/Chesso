@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import chess
-import chess.svg
 import streamlit as st
 
 import db
@@ -16,16 +15,6 @@ st.set_page_config(page_title="Chesso", page_icon="♞", layout="wide")
 def get_engine():
     url, is_neon = db.get_database_url()
     return db.make_engine(url), is_neon
-
-
-def board_svg(board: chess.Board, *, flipped=False, size=520, highlight=None):
-    last = board.peek() if board.move_stack else None
-    svg = chess.svg.board(
-        board, size=size, orientation=chess.BLACK if flipped else chess.WHITE,
-        lastmove=last, check=board.king(board.turn) if board.is_check() else None,
-        squares=highlight or None,
-    )
-    st.markdown(f'<div style="text-align:center">{svg}</div>', unsafe_allow_html=True)
 
 
 def san_table(board_or_sans):
@@ -198,7 +187,7 @@ def page_library(engine):
             ss.pop(key, None)
             st.rerun()
     with left:
-        board_svg(boards[ss[key]])
+        chess_board(boards[ss[key]], key="lib_board_ui", interactive=False)
 
 
 # --------------------------------------------------------------------------------- main
