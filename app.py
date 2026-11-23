@@ -55,7 +55,7 @@ AI_MOVE_DELAY = 1.0   # seconds the AI "waits" so you can see your own move firs
 
 @functools.lru_cache(maxsize=None)
 def _mini_piece(symbol: str) -> str:
-    svg = chess.svg.piece(chess.Piece.from_symbol(symbol), size=22)
+    svg = chess.svg.piece(chess.Piece.from_symbol(symbol), size=20)
     return " ".join(svg.split())          # single line so Markdown can't break the SVG
 
 
@@ -63,10 +63,10 @@ def _capture_strip(label: str, pieces: list[chess.Piece], lead: int) -> str:
     icons = "".join(_mini_piece(p.symbol()) for p in pieces)
     plus = f'<b style="margin-left:6px">+{lead}</b>' if lead > 0 else ""
     return (
-        '<div style="max-width:560px;margin:2px auto;min-height:30px;display:flex;align-items:center;'
+        '<div style="max-width:560px;margin:2px auto;min-height:26px;display:flex;align-items:center;'
         'gap:8px;font-size:0.85rem"><span style="opacity:.75;min-width:3.2em">' + label + '</span>'
         '<span style="display:inline-flex;align-items:center;flex-wrap:wrap;background:#e9e4da;color:#333;'
-        'border-radius:6px;padding:1px 6px;min-height:26px;min-width:26px">' + icons + plus + '</span></div>'
+        'border-radius:6px;padding:1px 6px;min-height:24px;min-width:24px">' + icons + plus + '</span></div>'
     )
 
 
@@ -104,16 +104,16 @@ def replay_view(engine, game_id: int, *, on_close=None, extra=None):
     def go(to: int):                 # runs before the rerun, so the slider picks it up
         ss[key] = max(0, min(last, to))
 
+    # Title and explanation first, so the board and the step buttons end up on one screen.
+    st.markdown(f"#### {game['title'] if is_opening else 'Review - ' + game['title']}")
+    if is_opening:
+        if info["intro"]:
+            st.caption(info["intro"])
+    else:
+        st.caption(f"Result: {game['result']}" + (f" · AI level: {game['level']}" if game["level"] else ""))
+
     left, right = st.columns([3, 2])
     with right:
-        st.subheader(game["title"] if is_opening else f"Review - {game['title']}")
-        if not is_opening:
-            st.caption(f"Result: {game['result']}"
-                       + (f" · AI level: {game['level']}" if game["level"] else ""))
-        elif info["intro"]:
-            st.caption(info["intro"])
-        if last:
-            st.slider("Move", 0, last, key=key)
         with st.container(horizontal=True):
             st.button("⏮", key="rv_first", on_click=go, args=(0,))
             st.button("◀", key="rv_prev", on_click=go, args=(ss[key] - 1,))
@@ -122,6 +122,8 @@ def replay_view(engine, game_id: int, *, on_close=None, extra=None):
         ply = ss[key]
         if ply and ply <= len(info["notes"]) and info["notes"][ply - 1]:
             st.info(f"💬 **{sans[ply - 1]}** - {info['notes'][ply - 1]}")
+        if last:
+            st.slider("Move", 0, last, key=key)
         st.code(san_table(sans) or "No moves", language=None)
         st.download_button("Download PGN", game["pgn"], file_name=f"chesso_{game_id}.pgn")
         with st.container(horizontal=True):
@@ -543,7 +545,14 @@ def page_training(engine):
 
 # --------------------------------------------------------------------------------- main
 def main():
-    st.title("♞ Chesso")
+    st.markdown(
+        "<style>"
+        ".stMainBlockContainer{padding-top:3.2rem !important}"
+        "h4{padding:0.2rem 0 0 !important}"
+        "div[data-testid=stVerticalBlock]{gap:0.6rem}"
+        "@media (max-width:640px){.chesso-title{display:none}}"   # save vertical space on phones
+        "</style><div class='chesso-title' style='font-size:1.75rem;font-weight:600;margin-bottom:.4rem'>"
+        "♞ Chesso</div>", unsafe_allow_html=True)
     engine, is_neon = get_engine()
     if not is_neon:
         st.sidebar.warning("No DATABASE_URL set - using a local SQLite file. "
