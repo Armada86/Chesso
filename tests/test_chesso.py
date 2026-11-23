@@ -65,3 +65,22 @@ def test_migrates_old_table(tmp_path):
     rows = db.list_games(eng)           # old rows count as finished
     assert len(rows) == 1 and rows[0]["status"] == "finished"
     db.make_engine(url)                  # running twice is harmless
+
+
+def test_captured_pieces_and_lead():
+    from captures import captured_pieces, material_lead
+    b = chess.Board()
+    for m in ("e2e4", "d7d5", "e4d5", "d8d5", "b1c3", "d5a5"):   # Qxd5 ... Qa5
+        b.push_uci(m)
+    caps = captured_pieces(b)
+    assert [p.symbol() for p in caps[chess.WHITE]] == ["p"]      # white took a black pawn
+    assert [p.symbol() for p in caps[chess.BLACK]] == ["P"]
+    assert material_lead(b) == 0
+
+
+def test_en_passant_counts_as_pawn_capture():
+    from captures import captured_pieces
+    b = chess.Board()
+    for m in ("e2e4", "a7a6", "e4e5", "d7d5", "e5d6"):           # exd6 e.p.
+        b.push_uci(m)
+    assert [p.symbol() for p in captured_pieces(b)[chess.WHITE]] == ["p"]

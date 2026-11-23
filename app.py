@@ -1,11 +1,16 @@
 """Chesso - a Streamlit chess app: play the AI (3 levels) or record training games."""
 from __future__ import annotations
 
+import functools
+import time
+
 import chess
+import chess.svg
 import streamlit as st
 
 import db
 from board_component import chess_board
+from captures import captured_pieces, material_lead
 from chess_ai import LEVELS, choose_move
 
 st.set_page_config(page_title="Chesso", page_icon="♞", layout="wide")
@@ -40,6 +45,39 @@ def status_text(board: chess.Board) -> str:
 
 def game_over(board: chess.Board) -> bool:
     return board.is_game_over(claim_draw=True)
+
+
+# ------------------------------------------------------------ captured pieces display
+AI_MOVE_DELAY = 1.0   # seconds the AI "waits" so you can see your own move first
+
+@functools.lru_cache(maxsize=None)
+def _mini_piece(symbol: str) -> str:
+    svg = chess.svg.piece(chess.Piece.from_symbol(symbol), size=22)
+    return " ".join(svg.split())          # single line so Markdown can't break the SVG
+
+
+def _capture_strip(label: str, pieces: list[chess.Piece], lead: int) -> str:
+    icons = "".join(_mini_piece(p.symbol()) for p in pieces)
+    plus = f'<b style="margin-left:6px">+{lead}</b>' if lead > 0 else ""
+    return (
+        '<div style="max-width:560px;margin:2px auto;min-height:30px;display:flex;align-items:center;'
+        'gap:8px;font-size:0.85rem"><span style="opacity:.75;min-width:3.2em">' + label + '</span>'
+        '<span style="display:inline-flex;align-items:center;flex-wrap:wrap;background:#e9e4da;color:#333;'
+        'border-radius:6px;padding:1px 6px;min-height:26px;min-width:26px">' + icons + plus + '</span></div>'
+    )
+
+
+def board_with_captures(board: chess.Board, *, key: str, flipped: bool, interactive: bool,
+                        names: dict[bool, str]):
+    """Board with a strip of captured pieces above (top player) and below (bottom player)."""
+    top = chess.WHITE if flipped else chess.BLACK
+    bottom = not top
+    caps, lead = captured_pieces(board), material_lead(board)
+    strip = lambda c: _capture_strip(names[c], caps[c], lead if c == chess.WHITE else -lead)
+    st.markdown(strip(top), unsafe_allow_html=True)
+    move = chess_board(board, key=key, flipped=flipped, interactive=interactive)
+    st.markdown(strip(bottom), unsafe_allow_html=True)
+    return move
 
 
 # --------------------------------------------------------------------------- AI mode
@@ -169,22 +207,20 @@ def page_vs_ai(engine):
     board: chess.Board = ss.ai_board
     human = chess.WHITE if ss.ai_color == "white" else chess.BLACK
 
-    # AI moves automatically when it's its turn.
-    if not game_over(board) and not ss.ai_resigned and board.turn != human:
-        with st.spinner(f"AI ({ss.ai_level}) is thinking..."):
-            board.push(choose_move(board, ss.ai_level))
-        st.rerun()
+    ai_turn = not game_over(board) and not ss.ai_resigned and board.turn != human
 
     left, right = st.columns([3, 2])
     with left:
         live = not game_over(board) and not ss.ai_resigned and board.turn == human
-        mv = chess_board(board, key="ai_board_ui", flipped=(human == chess.BLACK), interactive=live)
+        names = {human: "You", (not human): f"AI"}
+        mv = board_with_captures(board, key="ai_board_ui", flipped=(human == chess.BLACK),
+                                 interactive=live, names=names)
         if mv:
             board.push(mv)
             st.rerun()
     with right:
         st.subheader(f"You vs AI - {ss.ai_level}")
-        st.info(status_text(board))
+        st.info(f"AI ({ss.ai_level}) is thinking..." if ai_turn else status_text(board))
         over = game_over(board) or ss.ai_resigned
         with st.container(horizontal=True):
             if st.button("💾 Save", key="ai_save", disabled=over or not board.move_stack,
@@ -199,6 +235,14 @@ def page_vs_ai(engine):
                 st.rerun()
         st.code(san_table(_sans(board)) or "No moves yet", language=None)
         _save_ai_game(engine, board, human)
+
+    # The page above is already drawn (showing your move), so the pause below is visible.
+    if ai_turn:
+        started = time.monotonic()
+        ai_move = choose_move(board, ss.ai_level)
+        time.sleep(max(0.0, AI_MOVE_DELAY - (time.monotonic() - started)))
+        board.push(ai_move)
+        st.rerun()
 
 
 def _save_ai_game(engine, board, human):
@@ -229,8 +273,9 @@ def page_training(engine):
     board: chess.Board = ss.tr_board
     left, right = st.columns([3, 2])
     with left:
-        mv = chess_board(board, key="tr_board_ui", flipped=ss.get("tr_flip", False),
-                         interactive=not game_over(board))
+        mv = board_with_captures(board, key="tr_board_ui", flipped=ss.get("tr_flip", False),
+                                 interactive=not game_over(board),
+                                 names={chess.WHITE: "White", chess.BLACK: "Black"})
         if mv:
             board.push(mv)
             ss.tr_redo = []
@@ -314,7 +359,8 @@ def page_library(engine):
             ss.pop(key, None)
             st.rerun()
     with left:
-        chess_board(boards[ss[key]], key="lib_board_ui", interactive=False)
+        board_with_captures(boards[ss[key]], key="lib_board_ui", flipped=False, interactive=False,
+                            names={chess.WHITE: "White", chess.BLACK: "Black"})
 
 
 # --------------------------------------------------------------------------------- main
