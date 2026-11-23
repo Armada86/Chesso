@@ -532,6 +532,7 @@ def page_training(engine):
         tr_confirm_dialog(engine, action)
 
     board: chess.Board = ss.tr_board
+    st.markdown("#### Training - play both sides")
     left, right = st.columns([3, 2])
     with left:
         mv = board_with_captures(board, key="tr_board_ui", flipped=ss.get("tr_flip", False),
@@ -542,8 +543,6 @@ def page_training(engine):
             ss.tr_redo = []
             st.rerun()
     with right:
-        st.subheader("Training - play both sides")
-        st.info(status_text(board))
         with st.container(horizontal=True):
             if st.button("⏮", key="tr_first", disabled=not board.move_stack, help="Back to the start"):
                 while board.move_stack:
@@ -562,10 +561,10 @@ def page_training(engine):
             if st.button("🔄 Flip", key="tr_flip_btn"):
                 ss.tr_flip = not ss.get("tr_flip", False)
                 st.rerun()
-        st.code(san_table(_sans(board)) or "No moves yet", language=None)
-
+        st.markdown(f"**{status_text(board)}**")      # slim line (not a tall box) to save space
         st.text_input("Title", value=ss.tr_title_default, key=f"tr_title_{ss.tr_ver}",
-                      placeholder="e.g. Italian Game ideas")
+                      placeholder="Title for this line, e.g. Italian Game ideas",
+                      label_visibility="collapsed")
         with st.container(horizontal=True):
             if st.button("💾 Save", key="tr_save", type="primary", disabled=not board.move_stack):
                 gid = _tr_save(engine)
@@ -575,6 +574,7 @@ def page_training(engine):
                 st.rerun()
             if st.button("🆕 New", key="tr_new", help="Start from the initial position"):
                 _tr_request(engine, ("new",))
+        st.code(san_table(_sans(board)) or "No moves yet", language=None)
 
 
 # --------------------------------------------------------------------------------- main
