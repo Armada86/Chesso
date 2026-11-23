@@ -80,6 +80,54 @@ def board_with_captures(board: chess.Board, *, key: str, flipped: bool, interact
     return move
 
 
+# ------------------------------------------------------------------------ replay view
+def replay_view(engine, game_id: int, *, on_close=None):
+    """Step through a finished game: slider, first/prev/next/last, PGN download, delete."""
+    ss = st.session_state
+    game = db.get_game(engine, game_id)
+    if not game:
+        st.info("That game no longer exists.")
+        return
+    sans, boards, _ = db.pgn_to_positions(game["pgn"])
+    key = f"slider_{game_id}"        # single source of truth for the current move
+    last = len(sans)
+    ss.setdefault(key, last)
+
+    def go(to: int):                 # runs before the rerun, so the slider picks it up
+        ss[key] = max(0, min(last, to))
+
+    left, right = st.columns([3, 2])
+    with right:
+        st.subheader(f"Review - {game['title']}")
+        st.caption(f"Result: {game['result']}" + (f" · AI level: {game['level']}" if game["level"] else ""))
+        if last:
+            st.slider("Move", 0, last, key=key)
+        with st.container(horizontal=True):
+            st.button("⏮", key="rv_first", on_click=go, args=(0,))
+            st.button("◀", key="rv_prev", on_click=go, args=(ss[key] - 1,))
+            st.button("▶", key="rv_next", on_click=go, args=(ss[key] + 1,))
+            st.button("⏭", key="rv_last", on_click=go, args=(last,))
+        st.code(san_table(sans) or "No moves", language=None)
+        st.download_button("Download PGN", game["pgn"], file_name=f"chesso_{game_id}.pgn")
+        with st.container(horizontal=True):
+            if on_close and st.button("← Back", key="rv_back"):
+                on_close()
+                st.rerun()
+            if st.button("🗑 Delete game", key="rv_delete"):
+                db.delete_game(engine, game_id)
+                ss.pop(key, None)
+                if on_close:
+                    on_close()
+                st.rerun()
+    with left:
+        names = {chess.WHITE: "White", chess.BLACK: "Black"}
+        if game["mode"] == "vs_ai":
+            you = chess.WHITE if game["human_color"] == "white" else chess.BLACK
+            names = {you: "You", (not you): "AI"}
+        board_with_captures(boards[ss[key]], key="rv_board_ui",
+                            flipped=(game["human_color"] == "black"), interactive=False, names=names)
+
+
 # --------------------------------------------------------------------------- AI mode
 def _sans(board: chess.Board):
     tmp, out = chess.Board(), []
@@ -106,6 +154,7 @@ def _ai_new_game(level: str, color: str):
     ss = st.session_state
     ss.ai_board, ss.ai_level, ss.ai_color = chess.Board(), level, color
     ss.ai_saved, ss.ai_resigned, ss.ai_game_id = False, False, None
+    ss.ai_review = None
 
 
 def _ai_load_game(engine, game_id: int):
@@ -118,6 +167,7 @@ def _ai_load_game(engine, game_id: int):
     ss.ai_board = boards[-1]
     ss.ai_level, ss.ai_color = row["level"] or "Medium", row["human_color"] or "white"
     ss.ai_saved, ss.ai_resigned, ss.ai_game_id = False, False, game_id
+    ss.ai_review = None
 
 
 def _ai_save_in_progress(engine) -> int:
@@ -150,24 +200,43 @@ def _ai_request(engine, action):
     st.rerun()
 
 
-@st.dialog("Resume a saved game")
+def _ai_label(r, sans, finished: bool) -> str:
+    bits = [r["level"], (r["human_color"] or "white").title()]
+    if finished:
+        bits.append(r["result"])
+    bits += [f"{len(sans)} moves", f"{(r['updated_at'] or r['created_at']):%b %d}"]
+    return " · ".join(bits)
+
+
+@st.dialog("Your games vs the AI")
 def load_dialog(engine):
-    rows = db.list_in_progress(engine)
-    if not rows:
-        st.write("You have no saved games in progress.")
+    ss = st.session_state
+    in_progress = db.list_in_progress(engine)
+    finished = db.list_games(engine, mode="vs_ai", status="finished")
+    if not in_progress and not finished:
+        st.write("No saved games yet. Press 💾 Save during a game, or finish one.")
         return
-    st.caption("Games you saved while playing against the AI.")
-    for r in rows:
-        sans, _, _ = db.pgn_to_positions(r["pgn"])
-        label = (f"{r['level']} · {r['human_color'].title()} · {len(sans)} moves · "
-                 f"{(r['updated_at'] or r['created_at']):%b %d}")
-        with st.container(horizontal=True, vertical_alignment="center"):
-            if st.button(label, key=f"load_{r['id']}"):
-                _ai_request(engine, ("load", r["id"]))
-            if st.button("🗑", key=f"del_{r['id']}", help="Delete this saved game"):
-                db.delete_game(engine, r["id"])
-                st.session_state.show_load = True
-                st.rerun()
+
+    def section(title, rows, is_finished):
+        st.markdown(f"**{title}**")
+        if not rows:
+            st.caption("None yet.")
+        for r in rows:
+            sans, _, _ = db.pgn_to_positions(r["pgn"])
+            with st.container(horizontal=True, vertical_alignment="center"):
+                if st.button(_ai_label(r, sans, is_finished), key=f"load_{r['id']}"):
+                    if is_finished:               # just look at it; your current game stays put
+                        ss.ai_review = r["id"]
+                        ss.pop(f"slider_{r['id']}", None)
+                        st.rerun()
+                    _ai_request(engine, ("load", r["id"]))
+                if st.button("🗑", key=f"del_{r['id']}", help="Delete this game"):
+                    db.delete_game(engine, r["id"])
+                    ss.show_load = True
+                    st.rerun()
+
+    section("In progress - tap to resume", in_progress, False)
+    section("Finished - tap to review", finished, True)
     if st.button("Cancel", key="load_cancel"):
         st.rerun()
 
@@ -204,6 +273,13 @@ def page_vs_ai(engine):
         if st.button("Start new game", use_container_width=True):
             _ai_request(engine, ("new", level, color))
 
+    if ss.get("ai_review"):
+        def close():
+            ss.ai_review = None
+        st.caption("Reviewing a finished game. Your current game is untouched.")
+        replay_view(engine, ss.ai_review, on_close=close)
+        return
+
     board: chess.Board = ss.ai_board
     human = chess.WHITE if ss.ai_color == "white" else chess.BLACK
 
@@ -227,7 +303,7 @@ def page_vs_ai(engine):
                          help="Save this game so you can resume it later"):
                 _ai_save_in_progress(engine)
                 st.toast("Game saved. Load it any time from 'Load'.", icon="💾")
-            if st.button("📂 Load", key="ai_load", help="Resume a saved game"):
+            if st.button("📂 Load", key="ai_load", help="Resume or review your games vs the AI"):
                 ss.show_load = True
                 st.rerun()
             if st.button("Resign", key="ai_resign", disabled=over):
@@ -261,14 +337,114 @@ def _save_ai_game(engine, board, human):
                            result=result, level=ss.ai_level, human_color=ss.ai_color)
         ss.ai_game_id = gid
     ss.ai_saved = True
-    st.success(f"Game over ({result}). Saved automatically to Saved games as #{gid}.")
+    st.success(f"Game over ({result}). Saved automatically - find it under 📂 Load → Finished.")
 
 
 # ----------------------------------------------------------------------- Training mode
+def _tr_moves(board: chess.Board) -> list[str]:
+    return [m.uci() for m in board.move_stack]
+
+
+def _tr_dirty() -> bool:
+    """Moves on the board that aren't stored in the database yet."""
+    ss = st.session_state
+    return bool(ss.tr_board.move_stack) and _tr_moves(ss.tr_board) != ss.tr_saved_moves
+
+
+def _tr_reset(board=None, game_id=None, title=""):
+    ss = st.session_state
+    ss.tr_board = board or chess.Board()
+    ss.tr_redo, ss.tr_game_id = [], game_id
+    ss.tr_saved_moves = _tr_moves(ss.tr_board) if game_id else []
+    ss.tr_title_default = title
+    ss.tr_ver = ss.get("tr_ver", 0) + 1       # new key -> the title box shows the new default
+
+
+def _tr_title() -> str:
+    ss = st.session_state
+    return (ss.get(f"tr_title_{ss.tr_ver}") or "").strip() or "Untitled line"
+
+
+def _tr_save(engine) -> int:
+    ss = st.session_state
+    board = ss.tr_board
+    pgn = db.board_to_pgn(board, white="Training", black="Training")
+    result = board.result(claim_draw=True)
+    if ss.tr_game_id:
+        db.update_game(engine, ss.tr_game_id, pgn=pgn, result=result, status="finished", title=_tr_title())
+    else:
+        ss.tr_game_id = db.save_game(engine, mode="training", title=_tr_title(), pgn=pgn, result=result)
+    ss.tr_saved_moves = _tr_moves(board)
+    return ss.tr_game_id
+
+
+def _tr_apply(engine, action):
+    if action[0] == "load":
+        row = db.get_game(engine, action[1])
+        if not row:
+            st.toast("That line no longer exists.")
+            return
+        _, boards, _ = db.pgn_to_positions(row["pgn"])
+        _tr_reset(boards[-1], row["id"], row["title"])
+    else:
+        _tr_reset()
+
+
+def _tr_request(engine, action):
+    """Replace the board; ask first if it holds unsaved moves."""
+    if _tr_dirty():
+        st.session_state.tr_confirm = action
+    else:
+        _tr_apply(engine, action)
+    st.rerun()
+
+
+@st.dialog("Your training lines")
+def tr_load_dialog(engine):
+    rows = db.list_games(engine, mode="training", status=None)
+    if not rows:
+        st.write("No saved training lines yet. Make some moves and press 💾 Save.")
+        return
+    st.caption("Tap a line to load it onto the board.")
+    for r in rows:
+        sans, _, _ = db.pgn_to_positions(r["pgn"])
+        label = f"{r['title']} · {len(sans)} moves · {(r['updated_at'] or r['created_at']):%b %d}"
+        with st.container(horizontal=True, vertical_alignment="center"):
+            if st.button(label, key=f"trload_{r['id']}"):
+                _tr_request(engine, ("load", r["id"]))
+            if st.button("🗑", key=f"trdel_{r['id']}", help="Delete this line"):
+                db.delete_game(engine, r["id"])
+                if st.session_state.tr_game_id == r["id"]:
+                    st.session_state.tr_game_id = None
+                st.session_state.tr_show_load = True
+                st.rerun()
+    if st.button("Cancel", key="trload_cancel"):
+        st.rerun()
+
+
+@st.dialog("Unsaved moves")
+def tr_confirm_dialog(engine, action):
+    st.write("The board has moves that aren't saved. Save this line before continuing?")
+    if st.button("Save it, then continue", type="primary", use_container_width=True):
+        _tr_save(engine)
+        _tr_apply(engine, action)
+        st.rerun()
+    if st.button("Don't save, just continue", use_container_width=True):
+        _tr_apply(engine, action)
+        st.rerun()
+    if st.button("Cancel", use_container_width=True):
+        st.rerun()
+
+
 def page_training(engine):
     ss = st.session_state
     if "tr_board" not in ss:
-        ss.tr_board, ss.tr_redo = chess.Board(), []
+        _tr_reset()
+    if ss.pop("tr_show_load", False):
+        tr_load_dialog(engine)
+    action = ss.pop("tr_confirm", None)
+    if action:
+        tr_confirm_dialog(engine, action)
 
     board: chess.Board = ss.tr_board
     left, right = st.columns([3, 2])
@@ -283,84 +459,37 @@ def page_training(engine):
     with right:
         st.subheader("Training - play both sides")
         st.info(status_text(board))
-        c1, c2, c3 = st.columns(3)
-        if c1.button("Undo", disabled=not board.move_stack, use_container_width=True):
-            ss.tr_redo.append(board.pop())
-            st.rerun()
-        if c2.button("Redo", disabled=not ss.tr_redo, use_container_width=True):
-            board.push(ss.tr_redo.pop())
-            st.rerun()
-        if c3.button("Flip", use_container_width=True):
-            ss.tr_flip = not ss.get("tr_flip", False)
-            st.rerun()
+        with st.container(horizontal=True):
+            if st.button("⏮", key="tr_first", disabled=not board.move_stack, help="Back to the start"):
+                while board.move_stack:
+                    ss.tr_redo.append(board.pop())
+                st.rerun()
+            if st.button("◀", key="tr_undo", disabled=not board.move_stack, help="Undo"):
+                ss.tr_redo.append(board.pop())
+                st.rerun()
+            if st.button("▶", key="tr_redo_btn", disabled=not ss.tr_redo, help="Redo"):
+                board.push(ss.tr_redo.pop())
+                st.rerun()
+            if st.button("⏭", key="tr_last", disabled=not ss.tr_redo, help="Forward to the end"):
+                while ss.tr_redo:
+                    board.push(ss.tr_redo.pop())
+                st.rerun()
+            if st.button("🔄 Flip", key="tr_flip_btn"):
+                ss.tr_flip = not ss.get("tr_flip", False)
+                st.rerun()
         st.code(san_table(_sans(board)) or "No moves yet", language=None)
 
-        with st.form("save_training", clear_on_submit=False):
-            title = st.text_input("Title", placeholder="e.g. Italian Game ideas")
-            save = st.form_submit_button("Save this line", type="primary",
-                                         use_container_width=True, disabled=not board.move_stack)
-        if save:
-            pgn = db.board_to_pgn(board, white="Training", black="Training")
-            gid = db.save_game(engine, mode="training", title=title or "Untitled line",
-                               pgn=pgn, result=board.result(claim_draw=True))
-            st.success(f"Saved as #{gid}. Find it under 'Saved games'.")
-        if st.button("Clear board", use_container_width=True):
-            ss.tr_board, ss.tr_redo = chess.Board(), []
-            st.rerun()
-
-
-# ------------------------------------------------------------------------ Saved games
-def page_library(engine):
-    ss = st.session_state
-    with st.sidebar:
-        st.caption("Saved games")
-        f = st.radio("Show", ["All", "Training", "Vs AI"], horizontal=True, key="lib_filter")
-        mode = {"All": None, "Training": "training", "Vs AI": "vs_ai"}[f]
-        rows = db.list_games(engine, mode)
-        if not rows:
-            st.write("No saved games yet.")
-        ids = [r["id"] for r in rows]
-        if ss.get("lib_gid") not in ids:
-            ss.lib_gid = ids[0] if ids else None
-        with st.container(height=320, border=False):
-            for r in rows:
-                label = f"#{r['id']} {r['title']} · {r['created_at']:%b %d}"
-                if st.button(label, key=f"game_{r['id']}", use_container_width=True,
-                             type="primary" if r["id"] == ss.lib_gid else "secondary"):
-                    ss.lib_gid = r["id"]
-                    st.rerun()
-    gid = ss.lib_gid
-    if gid is None:
-        st.info("No saved games to show. Save one from Training mode or finish a game vs the AI.")
-        return
-    game = db.get_game(engine, gid)
-    sans, boards, _ = db.pgn_to_positions(game["pgn"])
-    key = f"slider_{gid}"            # single source of truth for the current move
-    last = len(sans)
-    ss.setdefault(key, last)
-
-    def go(to: int):                 # runs before the rerun, so the slider picks it up
-        ss[key] = max(0, min(last, to))
-
-    left, right = st.columns([3, 2])
-    with right:
-        st.caption(f"Result: {game['result']}" + (f" - AI level: {game['level']}" if game["level"] else ""))
-        if last:
-            st.slider("Move", 0, last, key=key)
+        st.text_input("Title", value=ss.tr_title_default, key=f"tr_title_{ss.tr_ver}",
+                      placeholder="e.g. Italian Game ideas")
         with st.container(horizontal=True):
-            st.button("⏮", key="nav_first", on_click=go, args=(0,))
-            st.button("◀", key="nav_prev", on_click=go, args=(ss[key] - 1,))
-            st.button("▶", key="nav_next", on_click=go, args=(ss[key] + 1,))
-            st.button("⏭", key="nav_last", on_click=go, args=(last,))
-        st.code(san_table(sans) or "No moves", language=None)
-        st.download_button("Download PGN", game["pgn"], file_name=f"chesso_{gid}.pgn")
-        if st.button("Delete game", type="secondary"):
-            db.delete_game(engine, gid)
-            ss.pop(key, None)
-            st.rerun()
-    with left:
-        board_with_captures(boards[ss[key]], key="lib_board_ui", flipped=False, interactive=False,
-                            names={chess.WHITE: "White", chess.BLACK: "Black"})
+            if st.button("💾 Save", key="tr_save", type="primary", disabled=not board.move_stack):
+                gid = _tr_save(engine)
+                st.toast(f"Line saved (#{gid}).", icon="💾")
+            if st.button("📂 Load", key="tr_load", help="Open one of your saved training lines"):
+                ss.tr_show_load = True
+                st.rerun()
+            if st.button("🆕 New", key="tr_new", help="Start from the initial position"):
+                _tr_request(engine, ("new",))
 
 
 # --------------------------------------------------------------------------------- main
@@ -370,7 +499,7 @@ def main():
     if not is_neon:
         st.sidebar.warning("No DATABASE_URL set - using a local SQLite file. "
                            "Set your Neon URL to persist games in the cloud.")
-    pages = {"Play vs AI": page_vs_ai, "Training mode": page_training, "Saved games": page_library}
+    pages = {"Play vs AI": page_vs_ai, "Training mode": page_training}
     st.session_state.setdefault("page", "Play vs AI")
     for name in pages:
         active = st.session_state.page == name

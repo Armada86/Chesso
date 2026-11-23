@@ -115,10 +115,12 @@ def save_game(engine: Engine, *, mode: str, title: str, pgn: str, result: str = 
 
 
 def update_game(engine: Engine, game_id: int, *, pgn: str, result: str = "*",
-                status: str = "finished") -> None:
+                status: str = "finished", title: str | None = None) -> None:
+    values = dict(pgn=pgn, result=result, status=status, updated_at=datetime.now(timezone.utc))
+    if title is not None:
+        values["title"] = title.strip() or "Untitled"
     with engine.begin() as conn:
-        conn.execute(update(games).where(games.c.id == game_id).values(
-            pgn=pgn, result=result, status=status, updated_at=datetime.now(timezone.utc)))
+        conn.execute(update(games).where(games.c.id == game_id).values(**values))
 
 
 def list_games(engine: Engine, mode: str | None = None, status: str | None = "finished"):
