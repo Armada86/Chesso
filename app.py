@@ -51,6 +51,7 @@ def game_over(board: chess.Board) -> bool:
 
 
 # ------------------------------------------------------------ captured pieces display
+STRIP_GAP_TITLE = 17      # px between the title/description and the top strip
 STRIP_GAP_TOP, STRIP_GAP_BOTTOM = 19.6, -8   # px; tuned so the space above and below the board is equal (~14px)
 AI_MOVE_DELAY = 1.0   # seconds the AI "waits" so you can see your own move first
 
@@ -79,7 +80,7 @@ def board_with_captures(board: chess.Board, *, key: str, flipped: bool, interact
     caps, lead = captured_pieces(board), material_lead(board)
     strip = lambda c, m: _capture_strip(names[c], caps[c], lead if c == chess.WHITE else -lead, m)
     # Explicit margins make the space between board and strip identical above and below.
-    st.markdown(strip(top, f"0 auto {STRIP_GAP_TOP}px"), unsafe_allow_html=True)
+    st.markdown(strip(top, f"{STRIP_GAP_TITLE}px auto {STRIP_GAP_TOP}px"), unsafe_allow_html=True)
     move = chess_board(board, key=key, flipped=flipped, interactive=interactive)
     st.markdown(strip(bottom, f"{STRIP_GAP_BOTTOM}px auto 0"), unsafe_allow_html=True)
     return move
