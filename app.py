@@ -169,17 +169,23 @@ def page_library(engine):
     gid = st.selectbox("Game", list(labels), format_func=labels.get)
     game = db.get_game(engine, gid)
     sans, boards, _ = db.pgn_to_positions(game["pgn"])
-    key = f"ply_{gid}"
-    ss.setdefault(key, len(sans))
+    key = f"slider_{gid}"            # single source of truth for the current move
+    last = len(sans)
+    ss.setdefault(key, last)
+
+    def go(to: int):                 # runs before the rerun, so the slider picks it up
+        ss[key] = max(0, min(last, to))
+
     left, right = st.columns([3, 2])
     with right:
         st.caption(f"Result: {game['result']}" + (f" - AI level: {game['level']}" if game["level"] else ""))
-        ss[key] = st.slider("Move", 0, len(sans), ss[key], key=f"slider_{gid}")
-        b1, b2, b3, b4 = st.columns(4)
-        if b1.button("⏮", key="first"): ss[key] = 0; st.rerun()
-        if b2.button("◀", key="prev"): ss[key] = max(0, ss[key] - 1); st.rerun()
-        if b3.button("▶", key="next"): ss[key] = min(len(sans), ss[key] + 1); st.rerun()
-        if b4.button("⏭", key="last"): ss[key] = len(sans); st.rerun()
+        if last:
+            st.slider("Move", 0, last, key=key)
+        with st.container(horizontal=True):
+            st.button("⏮", key="nav_first", on_click=go, args=(0,))
+            st.button("◀", key="nav_prev", on_click=go, args=(ss[key] - 1,))
+            st.button("▶", key="nav_next", on_click=go, args=(ss[key] + 1,))
+            st.button("⏭", key="nav_last", on_click=go, args=(last,))
         st.code(san_table(sans) or "No moves", language=None)
         st.download_button("Download PGN", game["pgn"], file_name=f"chesso_{gid}.pgn")
         if st.button("Delete game", type="secondary"):
