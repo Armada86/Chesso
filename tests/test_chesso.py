@@ -29,3 +29,10 @@ def test_db_roundtrip(tmp_path):
     assert len(db.list_games(eng, "training")) == 1
     db.delete_game(eng, gid)
     assert db.list_games(eng) == []
+
+
+def test_normalize_url():
+    for u in ("postgres://u:p@h/d?sslmode=require", "postgresql+psycopg://u:p@h/d?sslmode=require",
+              " 'postgresql://u:p@h/d?sslmode=require' ", "psql 'postgresql://u:p@h/d?sslmode=require'"):
+        assert db.normalize_url(u) == "postgresql+psycopg2://u:p@h/d?sslmode=require"
+    assert db.normalize_url("sqlite:///x.db") == "sqlite:///x.db"

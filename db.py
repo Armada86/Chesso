@@ -39,10 +39,24 @@ def get_database_url() -> tuple[str, bool]:
             url = None
     if not url:
         return LOCAL_FALLBACK, False
-    # SQLAlchemy wants the 'postgresql://' scheme (Heroku-style 'postgres://' is rejected).
-    if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://"):]
-    return url, True
+    return normalize_url(url), True
+
+
+def normalize_url(url: str) -> str:
+    """Force Postgres URLs onto the psycopg2 driver we install.
+
+    Accepts 'postgres://', 'postgresql://', or 'postgresql+<anything>://'
+    and tolerates stray whitespace/quotes from copy-pasting.
+    """
+    url = url.strip().strip("'\"")
+    if url.startswith("psql "):
+        url = url[5:].strip().strip("'\"")
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg2://" + url[len(prefix):]
+    if url.startswith("postgresql+"):
+        return "postgresql+psycopg2://" + url.split("://", 1)[1]
+    return url
 
 
 def make_engine(url: str | None = None) -> Engine:
