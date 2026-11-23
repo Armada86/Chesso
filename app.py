@@ -197,8 +197,16 @@ def main():
     if not is_neon:
         st.sidebar.warning("No DATABASE_URL set - using a local SQLite file. "
                            "Set your Neon URL to persist games in the cloud.")
-    page = st.sidebar.radio("Mode", ["Play vs AI", "Training mode", "Saved games"])
-    {"Play vs AI": page_vs_ai, "Training mode": page_training, "Saved games": page_library}[page](engine)
+    pages = {"Play vs AI": page_vs_ai, "Training mode": page_training, "Saved games": page_library}
+    st.session_state.setdefault("page", "Play vs AI")
+    for name in pages:
+        active = st.session_state.page == name
+        if st.sidebar.button(name, key=f"nav_{name}", use_container_width=True,
+                             type="primary" if active else "secondary"):
+            st.session_state.page = name
+            st.rerun()
+    st.sidebar.divider()
+    pages[st.session_state.page](engine)
 
 
 main()
