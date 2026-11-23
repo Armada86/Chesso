@@ -158,15 +158,27 @@ def page_training(engine):
 # ------------------------------------------------------------------------ Saved games
 def page_library(engine):
     ss = st.session_state
-    f = st.radio("Show", ["All", "Training", "Vs AI"], horizontal=True)
-    mode = {"All": None, "Training": "training", "Vs AI": "vs_ai"}[f]
-    rows = db.list_games(engine, mode)
-    if not rows:
-        st.write("No saved games yet.")
+    with st.sidebar:
+        st.caption("Saved games")
+        f = st.radio("Show", ["All", "Training", "Vs AI"], horizontal=True, key="lib_filter")
+        mode = {"All": None, "Training": "training", "Vs AI": "vs_ai"}[f]
+        rows = db.list_games(engine, mode)
+        if not rows:
+            st.write("No saved games yet.")
+        ids = [r["id"] for r in rows]
+        if ss.get("lib_gid") not in ids:
+            ss.lib_gid = ids[0] if ids else None
+        with st.container(height=320, border=False):
+            for r in rows:
+                label = f"#{r['id']} {r['title']} · {r['created_at']:%b %d}"
+                if st.button(label, key=f"game_{r['id']}", use_container_width=True,
+                             type="primary" if r["id"] == ss.lib_gid else "secondary"):
+                    ss.lib_gid = r["id"]
+                    st.rerun()
+    gid = ss.lib_gid
+    if gid is None:
+        st.info("No saved games to show. Save one from Training mode or finish a game vs the AI.")
         return
-    labels = {r["id"]: f"#{r['id']} - {r['title']} [{r['mode']}] {r['created_at']:%Y-%m-%d %H:%M}"
-              for r in rows}
-    gid = st.selectbox("Game", list(labels), format_func=labels.get)
     game = db.get_game(engine, gid)
     sans, boards, _ = db.pgn_to_positions(game["pgn"])
     key = f"slider_{gid}"            # single source of truth for the current move
