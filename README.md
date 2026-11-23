@@ -3,6 +3,7 @@
 Streamlit chess app with a Neon (Postgres) database.
 
 - **Click to move** – click a piece (legal destinations get dots), then click where it goes; illegal moves are ignored and pawn promotion shows a picker.
+- **Back / Forward vs AI** – ◀ Back takes back your last move together with the AI's reply (so it's your turn again); Forward ▶ replays them. Playing a new move overwrites what was taken back.
 - **Save / Load vs AI** – 💾 Save stores the game in progress; 📂 Load (or choosing *Play vs AI* in the menu) lists your saved games to resume. Starting a new game or loading another asks whether to save the current one first. Finished games are saved automatically; 📂 Load lists them under *Finished* so you can step through them.
 - **Play vs AI** – 3 levels (Easy / Medium / Hard), pick your colour. Finished games (or resignations) are saved automatically.
 - **Training mode** – move both sides, with ⏮ ◀ ▶ ⏭ to step through, flip, and 💾 Save / 📂 Load / 🆕 New for your own practice lines (kept separate from AI games).

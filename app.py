@@ -205,7 +205,7 @@ def _ai_new_game(level: str, color: str):
     ss = st.session_state
     ss.ai_board, ss.ai_level, ss.ai_color = chess.Board(), level, color
     ss.ai_saved, ss.ai_resigned, ss.ai_game_id = False, False, None
-    ss.ai_review = None
+    ss.ai_review, ss.ai_redo = None, []
 
 
 def _ai_load_game(engine, game_id: int):
@@ -218,7 +218,7 @@ def _ai_load_game(engine, game_id: int):
     ss.ai_board = boards[-1]
     ss.ai_level, ss.ai_color = row["level"] or "Medium", row["human_color"] or "white"
     ss.ai_saved, ss.ai_resigned, ss.ai_game_id = False, False, game_id
-    ss.ai_review = None
+    ss.ai_review, ss.ai_redo = None, []
 
 
 def _ai_save_in_progress(engine) -> int:
@@ -233,6 +233,31 @@ def _ai_save_in_progress(engine) -> int:
                                      level=ss.ai_level, human_color=ss.ai_color,
                                      status="in_progress")
     return ss.ai_game_id
+
+
+def _ai_human_moves(board: chess.Board, human: bool) -> int:
+    """How many of the moves played so far were the human's."""
+    return sum(1 for i in range(len(board.move_stack)) if (i % 2 == 0) == (human == chess.WHITE))
+
+
+def _ai_back():
+    """Take back to your own previous move: undo the AI's reply and your move (2 plies)."""
+    ss = st.session_state
+    board, human = ss.ai_board, chess.WHITE if ss.ai_color == "white" else chess.BLACK
+    while board.move_stack:
+        ss.ai_redo.append(board.pop())
+        if board.turn == human:        # back to a position where it's your move again
+            break
+
+
+def _ai_forward():
+    """Replay your undone move and, if there is one, the AI's reply."""
+    ss = st.session_state
+    board, human = ss.ai_board, chess.WHITE if ss.ai_color == "white" else chess.BLACK
+    if ss.ai_redo:
+        board.push(ss.ai_redo.pop())
+    if ss.ai_redo and board.turn != human:
+        board.push(ss.ai_redo.pop())
 
 
 def _ai_apply(engine, action):
@@ -336,6 +361,8 @@ def page_vs_ai(engine):
 
     ai_turn = not game_over(board) and not ss.ai_resigned and board.turn != human
 
+    ss.setdefault("ai_redo", [])
+    st.markdown(f"#### You vs AI - {ss.ai_level}")
     left, right = st.columns([3, 2])
     with left:
         live = not game_over(board) and not ss.ai_resigned and board.turn == human
@@ -344,11 +371,17 @@ def page_vs_ai(engine):
                                  interactive=live, names=names)
         if mv:
             board.push(mv)
+            ss.ai_redo = []            # a new move overwrites whatever was taken back
             st.rerun()
     with right:
-        st.subheader(f"You vs AI - {ss.ai_level}")
-        st.info(f"AI ({ss.ai_level}) is thinking..." if ai_turn else status_text(board))
         over = game_over(board) or ss.ai_resigned
+        with st.container(horizontal=True):
+            st.button("◀ Back", key="ai_back", on_click=_ai_back,
+                      disabled=over or _ai_human_moves(board, human) == 0,
+                      help="Take back your last move (and the AI's reply)")
+            st.button("Forward ▶", key="ai_fwd", on_click=_ai_forward,
+                      disabled=over or not ss.ai_redo, help="Replay the move you took back")
+        st.info(f"AI ({ss.ai_level}) is thinking..." if ai_turn else status_text(board))
         with st.container(horizontal=True):
             if st.button("💾 Save", key="ai_save", disabled=over or not board.move_stack,
                          help="Save this game so you can resume it later"):
@@ -359,6 +392,7 @@ def page_vs_ai(engine):
                 st.rerun()
             if st.button("Resign", key="ai_resign", disabled=over):
                 ss.ai_resigned = True
+                ss.ai_redo = []
                 st.rerun()
         st.code(san_table(_sans(board)) or "No moves yet", language=None)
         _save_ai_game(engine, board, human)
