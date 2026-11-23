@@ -84,3 +84,22 @@ def test_en_passant_counts_as_pawn_capture():
     for m in ("e2e4", "a7a6", "e4e5", "d7d5", "e5d6"):           # exd6 e.p.
         b.push_uci(m)
     assert [p.symbol() for p in captured_pieces(b)[chess.WHITE]] == ["p"]
+
+
+def test_openings_are_valid_and_seeded_once(tmp_path):
+    import openings
+    assert len(openings.OPENINGS) == 10
+    assert len({o.name for o in openings.OPENINGS}) == 10
+    for op in openings.OPENINGS:
+        board = chess.Board()
+        for san in op.moves.split():
+            board.push_san(san)                      # raises if any move is illegal
+        assert op.notes and max(op.notes) <= len(op.moves.split())
+        info = db.pgn_info(openings.build_pgn(op))   # round-trips through PGN
+        assert info["intro"] == op.idea
+        for ply, text in op.notes.items():
+            assert info["notes"][ply - 1] == text
+    eng = db.make_engine(f"sqlite:///{tmp_path/'o.db'}")
+    assert openings.seed(eng) == 10
+    assert openings.seed(eng) == 0                   # idempotent
+    assert len(db.list_games(eng, mode="opening", status=None)) == 10

@@ -9,6 +9,7 @@ import chess.svg
 import streamlit as st
 
 import db
+import openings
 from board_component import chess_board
 from captures import captured_pieces, material_lead
 from chess_ai import LEVELS, choose_move
@@ -19,7 +20,9 @@ st.set_page_config(page_title="Chesso", page_icon="♞", layout="wide")
 @st.cache_resource
 def get_engine():
     url, is_neon = db.get_database_url()
-    return db.make_engine(url), is_neon
+    engine = db.make_engine(url)
+    openings.seed(engine)          # make sure the 10 famous openings are in the database
+    return engine, is_neon
 
 
 def san_table(board_or_sans):
@@ -81,25 +84,34 @@ def board_with_captures(board: chess.Board, *, key: str, flipped: bool, interact
 
 
 # ------------------------------------------------------------------------ replay view
-def replay_view(engine, game_id: int, *, on_close=None):
-    """Step through a finished game: slider, first/prev/next/last, PGN download, delete."""
+def replay_view(engine, game_id: int, *, on_close=None, extra=None):
+    """Step through a game: slider, first/prev/next/last, notes, PGN download, delete.
+
+    `extra` is an optional function that draws more buttons next to Back/Delete.
+    """
     ss = st.session_state
     game = db.get_game(engine, game_id)
     if not game:
         st.info("That game no longer exists.")
         return
+    is_opening = game["mode"] == "opening"
     sans, boards, _ = db.pgn_to_positions(game["pgn"])
+    info = db.pgn_info(game["pgn"])
     key = f"slider_{game_id}"        # single source of truth for the current move
     last = len(sans)
-    ss.setdefault(key, last)
+    ss.setdefault(key, 0 if is_opening else last)   # openings start at move 0
 
     def go(to: int):                 # runs before the rerun, so the slider picks it up
         ss[key] = max(0, min(last, to))
 
     left, right = st.columns([3, 2])
     with right:
-        st.subheader(f"Review - {game['title']}")
-        st.caption(f"Result: {game['result']}" + (f" · AI level: {game['level']}" if game["level"] else ""))
+        st.subheader(game["title"] if is_opening else f"Review - {game['title']}")
+        if not is_opening:
+            st.caption(f"Result: {game['result']}"
+                       + (f" · AI level: {game['level']}" if game["level"] else ""))
+        elif info["intro"]:
+            st.caption(info["intro"])
         if last:
             st.slider("Move", 0, last, key=key)
         with st.container(horizontal=True):
@@ -107,13 +119,18 @@ def replay_view(engine, game_id: int, *, on_close=None):
             st.button("◀", key="rv_prev", on_click=go, args=(ss[key] - 1,))
             st.button("▶", key="rv_next", on_click=go, args=(ss[key] + 1,))
             st.button("⏭", key="rv_last", on_click=go, args=(last,))
+        ply = ss[key]
+        if ply and ply <= len(info["notes"]) and info["notes"][ply - 1]:
+            st.info(f"💬 **{sans[ply - 1]}** - {info['notes'][ply - 1]}")
         st.code(san_table(sans) or "No moves", language=None)
         st.download_button("Download PGN", game["pgn"], file_name=f"chesso_{game_id}.pgn")
         with st.container(horizontal=True):
+            if extra:
+                extra()
             if on_close and st.button("← Back", key="rv_back"):
                 on_close()
                 st.rerun()
-            if st.button("🗑 Delete game", key="rv_delete"):
+            if not is_opening and st.button("🗑 Delete game", key="rv_delete"):
                 db.delete_game(engine, game_id)
                 ss.pop(key, None)
                 if on_close:
@@ -126,6 +143,38 @@ def replay_view(engine, game_id: int, *, on_close=None):
             names = {you: "You", (not you): "AI"}
         board_with_captures(boards[ss[key]], key="rv_board_ui",
                             flipped=(game["human_color"] == "black"), interactive=False, names=names)
+
+
+# ------------------------------------------------------------------------- Openings
+@st.dialog("Famous openings")
+def openings_dialog(rows):
+    st.caption("Tap an opening to load it, then step through it move by move.")
+    for i, r in enumerate(rows, start=1):
+        sans, _, _ = db.pgn_to_positions(r["pgn"])
+        if st.button(f"{i}. {r['title']} · {len(sans)} moves", key=f"op_{r['id']}",
+                     use_container_width=True):
+            st.session_state.op_gid = r["id"]
+            st.session_state.pop(f"slider_{r['id']}", None)
+            st.rerun()
+
+
+def page_openings(engine):
+    ss = st.session_state
+    rows = sorted(db.list_games(engine, mode="opening", status=None), key=lambda r: r["id"])
+    if not rows:
+        st.info("No openings found in the database.")
+        return
+    if ss.get("op_gid") not in [r["id"] for r in rows]:
+        ss.op_gid = rows[0]["id"]
+    if ss.pop("op_show_load", False):
+        openings_dialog(rows)
+
+    def load_button():
+        if st.button("📂 Load", key="op_load", help="Choose another opening"):
+            ss.op_show_load = True
+            st.rerun()
+
+    replay_view(engine, ss.op_gid, extra=load_button)
 
 
 # --------------------------------------------------------------------------- AI mode
@@ -499,7 +548,7 @@ def main():
     if not is_neon:
         st.sidebar.warning("No DATABASE_URL set - using a local SQLite file. "
                            "Set your Neon URL to persist games in the cloud.")
-    pages = {"Play vs AI": page_vs_ai, "Training mode": page_training}
+    pages = {"Play vs AI": page_vs_ai, "Training mode": page_training, "Openings": page_openings}
     st.session_state.setdefault("page", "Play vs AI")
     for name in pages:
         active = st.session_state.page == name

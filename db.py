@@ -164,3 +164,10 @@ def pgn_to_positions(pgn: str):
         moves.append(mv)
         boards.append(board.copy())
     return sans, boards, moves
+
+
+def pgn_info(pgn: str) -> dict:
+    """Headers plus comments: {'headers': {...}, 'intro': str, 'notes': [comment per ply]}."""
+    game = chess.pgn.read_game(io.StringIO(pgn))
+    return {"headers": dict(game.headers), "intro": game.comment.strip(),
+            "notes": [n.comment.strip() for n in game.mainline()]}
