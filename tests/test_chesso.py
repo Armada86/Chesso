@@ -36,3 +36,32 @@ def test_normalize_url():
               " 'postgresql://u:p@h/d?sslmode=require' ", "psql 'postgresql://u:p@h/d?sslmode=require'"):
         assert db.normalize_url(u) == "postgresql+psycopg2://u:p@h/d?sslmode=require"
     assert db.normalize_url("sqlite:///x.db") == "sqlite:///x.db"
+
+
+def test_in_progress_vs_finished(tmp_path):
+    eng = db.make_engine(f"sqlite:///{tmp_path/'s.db'}")
+    gid = db.save_game(eng, mode="vs_ai", title="wip", pgn="1. e4 *", level="Easy",
+                       human_color="white", status="in_progress")
+    # in-progress games are kept out of the Saved games library
+    assert db.list_games(eng) == []
+    assert [g["id"] for g in db.list_in_progress(eng)] == [gid]
+    db.update_game(eng, gid, pgn="1. e4 e5 1-0", result="1-0", status="finished")
+    assert db.list_in_progress(eng) == []
+    assert [g["id"] for g in db.list_games(eng)] == [gid]
+    assert db.get_game(eng, gid)["result"] == "1-0"
+
+
+def test_migrates_old_table(tmp_path):
+    from sqlalchemy import create_engine, text
+    url = f"sqlite:///{tmp_path/'old.db'}"
+    old = create_engine(url)
+    with old.begin() as c:  # the original schema, before status/updated_at existed
+        c.execute(text("CREATE TABLE games (id INTEGER PRIMARY KEY AUTOINCREMENT, mode VARCHAR(16) NOT NULL,"
+                       " title VARCHAR(200) NOT NULL, level VARCHAR(16), human_color VARCHAR(5),"
+                       " result VARCHAR(10) NOT NULL, pgn TEXT NOT NULL, created_at TIMESTAMP NOT NULL)"))
+        c.execute(text("INSERT INTO games (mode,title,result,pgn,created_at) "
+                       "VALUES ('training','old','*','1. e4 *','2026-01-01')"))
+    eng = db.make_engine(url)
+    rows = db.list_games(eng)           # old rows count as finished
+    assert len(rows) == 1 and rows[0]["status"] == "finished"
+    db.make_engine(url)                  # running twice is harmless

@@ -43,22 +43,128 @@ def game_over(board: chess.Board) -> bool:
 
 
 # --------------------------------------------------------------------------- AI mode
+def _sans(board: chess.Board):
+    tmp, out = chess.Board(), []
+    for m in board.move_stack:
+        out.append(tmp.san(m))
+        tmp.push(m)
+    return out
+
+
+def _ai_in_progress() -> bool:
+    """True when there is an unfinished game with at least one move on the AI board."""
+    ss = st.session_state
+    b = ss.get("ai_board")
+    return bool(b and b.move_stack and not game_over(b) and not ss.ai_resigned)
+
+
+def _ai_players():
+    ss = st.session_state
+    me, ai = "You", f"AI ({ss.ai_level})"
+    return (me, ai) if ss.ai_color == "white" else (ai, me)
+
+
+def _ai_new_game(level: str, color: str):
+    ss = st.session_state
+    ss.ai_board, ss.ai_level, ss.ai_color = chess.Board(), level, color
+    ss.ai_saved, ss.ai_resigned, ss.ai_game_id = False, False, None
+
+
+def _ai_load_game(engine, game_id: int):
+    ss = st.session_state
+    row = db.get_game(engine, game_id)
+    if not row:
+        st.toast("That saved game no longer exists.")
+        return
+    _, boards, _ = db.pgn_to_positions(row["pgn"])
+    ss.ai_board = boards[-1]
+    ss.ai_level, ss.ai_color = row["level"] or "Medium", row["human_color"] or "white"
+    ss.ai_saved, ss.ai_resigned, ss.ai_game_id = False, False, game_id
+
+
+def _ai_save_in_progress(engine) -> int:
+    """Save (or update) the current game as 'in progress' so it can be resumed later."""
+    ss = st.session_state
+    white, black = _ai_players()
+    pgn = db.board_to_pgn(ss.ai_board, white=white, black=black, result="*")
+    if ss.get("ai_game_id"):
+        db.update_game(engine, ss.ai_game_id, pgn=pgn, result="*", status="in_progress")
+    else:
+        ss.ai_game_id = db.save_game(engine, mode="vs_ai", title=f"{white} vs {black}", pgn=pgn,
+                                     level=ss.ai_level, human_color=ss.ai_color,
+                                     status="in_progress")
+    return ss.ai_game_id
+
+
+def _ai_apply(engine, action):
+    if action[0] == "load":
+        _ai_load_game(engine, action[1])
+    else:  # ("new", level, color)
+        _ai_new_game(action[1], action[2])
+
+
+def _ai_request(engine, action):
+    """Run an action that replaces the current game; ask first if one is in progress."""
+    if _ai_in_progress():
+        st.session_state.confirm_action = action
+    else:
+        _ai_apply(engine, action)
+    st.rerun()
+
+
+@st.dialog("Resume a saved game")
+def load_dialog(engine):
+    rows = db.list_in_progress(engine)
+    if not rows:
+        st.write("You have no saved games in progress.")
+        return
+    st.caption("Games you saved while playing against the AI.")
+    for r in rows:
+        sans, _, _ = db.pgn_to_positions(r["pgn"])
+        label = (f"{r['level']} · {r['human_color'].title()} · {len(sans)} moves · "
+                 f"{(r['updated_at'] or r['created_at']):%b %d}")
+        with st.container(horizontal=True, vertical_alignment="center"):
+            if st.button(label, key=f"load_{r['id']}"):
+                _ai_request(engine, ("load", r["id"]))
+            if st.button("🗑", key=f"del_{r['id']}", help="Delete this saved game"):
+                db.delete_game(engine, r["id"])
+                st.session_state.show_load = True
+                st.rerun()
+    if st.button("Cancel", key="load_cancel"):
+        st.rerun()
+
+
+@st.dialog("Game in progress")
+def confirm_dialog(engine, action):
+    st.write("You have a game in progress. Do you want to save it before continuing?")
+    if st.button("Save it, then continue", type="primary", use_container_width=True):
+        _ai_save_in_progress(engine)
+        _ai_apply(engine, action)
+        st.rerun()
+    if st.button("Don't save, just continue", use_container_width=True):
+        _ai_apply(engine, action)
+        st.rerun()
+    if st.button("Cancel", use_container_width=True):
+        st.rerun()
+
+
 def page_vs_ai(engine):
     ss = st.session_state
     if "ai_board" not in ss:
-        ss.ai_board = chess.Board()
-        ss.ai_level, ss.ai_color = "Medium", "white"
-        ss.ai_saved = False
-        ss.ai_resigned = False
+        _ai_new_game("Medium", "white")
+
+    if ss.pop("show_load", False):
+        load_dialog(engine)
+    action = ss.pop("confirm_action", None)
+    if action:
+        confirm_dialog(engine, action)
 
     with st.sidebar:
         st.subheader("New game")
         level = st.radio("AI level", list(LEVELS), index=list(LEVELS).index(ss.ai_level))
         color = st.radio("Play as", ["white", "black"], index=["white", "black"].index(ss.ai_color))
         if st.button("Start new game", use_container_width=True):
-            ss.ai_board, ss.ai_level, ss.ai_color, ss.ai_saved = chess.Board(), level, color, False
-            ss.ai_resigned = False
-            st.rerun()
+            _ai_request(engine, ("new", level, color))
 
     board: chess.Board = ss.ai_board
     human = chess.WHITE if ss.ai_color == "white" else chess.BLACK
@@ -79,36 +185,39 @@ def page_vs_ai(engine):
     with right:
         st.subheader(f"You vs AI - {ss.ai_level}")
         st.info(status_text(board))
-        if not game_over(board) and not ss.ai_resigned:
-            if st.button("Resign", use_container_width=True):
+        over = game_over(board) or ss.ai_resigned
+        with st.container(horizontal=True):
+            if st.button("💾 Save", key="ai_save", disabled=over or not board.move_stack,
+                         help="Save this game so you can resume it later"):
+                _ai_save_in_progress(engine)
+                st.toast("Game saved. Load it any time from 'Load'.", icon="💾")
+            if st.button("📂 Load", key="ai_load", help="Resume a saved game"):
+                ss.show_load = True
+                st.rerun()
+            if st.button("Resign", key="ai_resign", disabled=over):
                 ss.ai_resigned = True
                 st.rerun()
-        sans = _sans(board)
-        st.code(san_table(sans) or "No moves yet", language=None)
+        st.code(san_table(_sans(board)) or "No moves yet", language=None)
         _save_ai_game(engine, board, human)
 
 
-def _sans(board: chess.Board):
-    tmp, out = chess.Board(), []
-    for m in board.move_stack:
-        out.append(tmp.san(m))
-        tmp.push(m)
-    return out
-
-
 def _save_ai_game(engine, board, human):
+    """When the game ends (mate, draw, resign) store it as finished automatically."""
     ss = st.session_state
-    resigned = ss.ai_resigned
-    if not (game_over(board) or resigned) or ss.ai_saved:
+    if not (game_over(board) or ss.ai_resigned) or ss.ai_saved:
         return
-    result = ("0-1" if human == chess.WHITE else "1-0") if resigned else board.result(claim_draw=True)
-    me, ai = "You", f"AI ({ss.ai_level})"
-    white, black = (me, ai) if human == chess.WHITE else (ai, me)
+    result = ("0-1" if human == chess.WHITE else "1-0") if ss.ai_resigned else board.result(claim_draw=True)
+    white, black = _ai_players()
     pgn = db.board_to_pgn(board, white=white, black=black, result=result)
-    gid = db.save_game(engine, mode="vs_ai", title=f"{white} vs {black}", pgn=pgn,
-                       result=result, level=ss.ai_level, human_color=ss.ai_color)
+    if ss.get("ai_game_id"):   # a game that was saved mid-way: finish that record
+        db.update_game(engine, ss.ai_game_id, pgn=pgn, result=result, status="finished")
+        gid = ss.ai_game_id
+    else:
+        gid = db.save_game(engine, mode="vs_ai", title=f"{white} vs {black}", pgn=pgn,
+                           result=result, level=ss.ai_level, human_color=ss.ai_color)
+        ss.ai_game_id = gid
     ss.ai_saved = True
-    st.success(f"Game over ({result}). Saved to your library as #{gid}.")
+    st.success(f"Game over ({result}). Saved automatically to Saved games as #{gid}.")
 
 
 # ----------------------------------------------------------------------- Training mode
@@ -222,7 +331,13 @@ def main():
         if st.sidebar.button(name, key=f"nav_{name}", use_container_width=True,
                              type="primary" if active else "secondary"):
             st.session_state.page = name
+            if name == "Play vs AI" and db.list_in_progress(engine):
+                st.session_state.show_load = True   # offer to resume a saved game
             st.rerun()
+    if "boot_prompt" not in st.session_state:       # once when the app is first opened
+        st.session_state.boot_prompt = True
+        if st.session_state.page == "Play vs AI" and db.list_in_progress(engine):
+            st.session_state.show_load = True
     st.sidebar.divider()
     pages[st.session_state.page](engine)
 

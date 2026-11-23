@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import chess
 import chess.pgn
 from sqlalchemy import (Column, DateTime, Integer, MetaData, String, Table, Text,
-                        create_engine, delete, insert, select)
+                        create_engine, delete, inspect, insert, select, text, update)
 from sqlalchemy.engine import Engine
 
 metadata = MetaData()
@@ -23,6 +23,9 @@ games = Table(
     Column("result", String(10), nullable=False, default="*"),
     Column("pgn", Text, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
+    # 'finished' = shows up in Saved games; 'in_progress' = a Play-vs-AI game you can resume.
+    Column("status", String(16), nullable=False, default="finished", server_default="finished"),
+    Column("updated_at", DateTime(timezone=True)),
 )
 
 LOCAL_FALLBACK = "sqlite:///chesso_local.db"
@@ -64,7 +67,19 @@ def make_engine(url: str | None = None) -> Engine:
     # pool_pre_ping: Neon suspends idle compute; reconnect transparently.
     engine = create_engine(url, pool_pre_ping=True, pool_recycle=300)
     metadata.create_all(engine)
+    _migrate(engine)
     return engine
+
+
+def _migrate(engine: Engine) -> None:
+    """Add columns introduced after the first release to an existing table."""
+    have = {c["name"] for c in inspect(engine).get_columns("games")}
+    with engine.begin() as conn:
+        if "status" not in have:
+            conn.execute(text("ALTER TABLE games ADD COLUMN status VARCHAR(16) "
+                              "NOT NULL DEFAULT 'finished'"))
+        if "updated_at" not in have:
+            conn.execute(text("ALTER TABLE games ADD COLUMN updated_at TIMESTAMP"))
 
 
 def board_to_pgn(board: chess.Board, *, white="White", black="Black",
@@ -87,20 +102,40 @@ def board_to_pgn(board: chess.Board, *, white="White", black="Black",
 
 
 def save_game(engine: Engine, *, mode: str, title: str, pgn: str, result: str = "*",
-              level: str | None = None, human_color: str | None = None) -> int:
+              level: str | None = None, human_color: str | None = None,
+              status: str = "finished") -> int:
+    now = datetime.now(timezone.utc)
     with engine.begin() as conn:
         res = conn.execute(insert(games).values(
             mode=mode, title=title.strip() or "Untitled", level=level,
-            human_color=human_color, result=result, pgn=pgn,
-            created_at=datetime.now(timezone.utc),
+            human_color=human_color, result=result, pgn=pgn, status=status,
+            created_at=now, updated_at=now,
         ))
         return int(res.inserted_primary_key[0])
 
 
-def list_games(engine: Engine, mode: str | None = None):
-    q = select(games).order_by(games.c.created_at.desc())
+def update_game(engine: Engine, game_id: int, *, pgn: str, result: str = "*",
+                status: str = "finished") -> None:
+    with engine.begin() as conn:
+        conn.execute(update(games).where(games.c.id == game_id).values(
+            pgn=pgn, result=result, status=status, updated_at=datetime.now(timezone.utc)))
+
+
+def list_games(engine: Engine, mode: str | None = None, status: str | None = "finished"):
+    """List games newest-first. status=None returns every status."""
+    q = select(games).order_by(games.c.created_at.desc(), games.c.id.desc())
     if mode:
         q = q.where(games.c.mode == mode)
+    if status:
+        q = q.where(games.c.status == status)
+    with engine.connect() as conn:
+        return [dict(r._mapping) for r in conn.execute(q)]
+
+
+def list_in_progress(engine: Engine):
+    """Play-vs-AI games that were saved mid-game, most recently saved first."""
+    q = (select(games).where(games.c.mode == "vs_ai", games.c.status == "in_progress")
+         .order_by(games.c.updated_at.desc(), games.c.id.desc()))
     with engine.connect() as conn:
         return [dict(r._mapping) for r in conn.execute(q)]
 
