@@ -80,6 +80,10 @@ def _migrate(engine: Engine) -> None:
                               "NOT NULL DEFAULT 'finished'"))
         if "updated_at" not in have:
             conn.execute(text("ALTER TABLE games ADD COLUMN updated_at TIMESTAMP"))
+        # Earlier versions put "Make mode" into the saved names; the lists now group by mode instead.
+        conn.execute(text("UPDATE games SET title = REPLACE(title, ' · Make mode', '') "
+                          "WHERE title LIKE '% · Make mode%'"))
+        conn.execute(text("UPDATE games SET title = 'Custom position' WHERE title = 'Make mode position'"))
 
 
 def board_to_pgn(board: chess.Board, *, white="White", black="Black",

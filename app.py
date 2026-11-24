@@ -113,8 +113,7 @@ def replay_view(engine, game_id: int, *, on_close=None, extra=None):
         ss[key] = max(0, min(last, to))
 
     # Title and explanation first, so the board and the step buttons end up on one screen.
-    tag = " · Make mode" if _from_make(game["pgn"]) and "make mode" not in game["title"].lower() else ""
-    st.markdown(f"#### {game['title'] if is_opening else 'Review - ' + game['title'] + tag}")
+    st.markdown(f"#### {game['title'] if is_opening else 'Review - ' + game['title']}")
     if is_opening:
         if info["intro"]:
             st.caption(info["intro"])
@@ -239,7 +238,7 @@ def _ai_save_in_progress(engine) -> int:
         db.update_game(engine, ss.ai_game_id, pgn=pgn, result="*", status="in_progress")
     else:
         ss.ai_game_id = db.save_game(engine, mode="vs_ai",
-                                     title=f"{white} vs {black}{_make_suffix(ss.ai_board)}", pgn=pgn,
+                                     title=f"{white} vs {black}", pgn=pgn,
                                      level=ss.ai_level, human_color=ss.ai_color,
                                      status="in_progress")
     return ss.ai_game_id
@@ -296,16 +295,15 @@ def _from_make(pgn: str) -> bool:
     return '[FEN "' in pgn
 
 
-def _make_suffix(board: chess.Board) -> str:
-    return " · Make mode" if board.root().fen() != chess.STARTING_FEN else ""
+def _moves(n: int) -> str:
+    return f"{n} move" + ("" if n == 1 else "s")
 
 
 def _ai_label(r, sans, finished: bool) -> str:
-    bits = ["Make mode"] if _from_make(r["pgn"]) else []
-    bits += [r["level"], (r["human_color"] or "white").title()]
+    bits = [r["level"], (r["human_color"] or "white").title()]
     if finished:
         bits.append(r["result"])
-    bits += [f"{len(sans)} moves", f"{(r['updated_at'] or r['created_at']):%b %d}"]
+    bits += [_moves(len(sans)), f"{(r['updated_at'] or r['created_at']):%b %d}"]
     return " · ".join(bits)
 
 
@@ -318,10 +316,7 @@ def load_dialog(engine):
         st.write("No saved games yet. Press 💾 Save during a game, or finish one.")
         return
 
-    def section(title, rows, is_finished):
-        st.markdown(f"**{title}**")
-        if not rows:
-            st.caption("None yet.")
+    def game_rows(rows, is_finished):
         for r in rows:
             sans, _, _ = db.pgn_to_positions(r["pgn"])
             with st.container(horizontal=True, vertical_alignment="center"):
@@ -336,8 +331,22 @@ def load_dialog(engine):
                     ss.show_load = True
                     st.rerun()
 
-    section("In progress - tap to resume", in_progress, False)
-    section("Finished - tap to review", finished, True)
+    def group(title, make: bool):
+        mine = lambda rows: [r for r in rows if _from_make(r["pgn"]) == make]
+        wip, done = mine(in_progress), mine(finished)
+        st.markdown(f"#### {title}")
+        if not wip and not done:
+            st.caption("None yet.")
+        if wip:
+            st.caption("In progress - tap to resume")
+            game_rows(wip, False)
+        if done:
+            st.caption("Finished - tap to review")
+            game_rows(done, True)
+
+    group("Normal mode", make=False)
+    st.divider()
+    group("Make mode", make=True)
     if st.button("Cancel", key="load_cancel"):
         st.rerun()
 
@@ -443,7 +452,7 @@ def _save_ai_game(engine, board, human):
         db.update_game(engine, ss.ai_game_id, pgn=pgn, result=result, status="finished")
         gid = ss.ai_game_id
     else:
-        gid = db.save_game(engine, mode="vs_ai", title=f"{white} vs {black}{_make_suffix(board)}",
+        gid = db.save_game(engine, mode="vs_ai", title=f"{white} vs {black}",
                            pgn=pgn, result=result, level=ss.ai_level, human_color=ss.ai_color)
         ss.ai_game_id = gid
     ss.ai_saved = True
@@ -491,7 +500,7 @@ def _tr_save(engine) -> int:
 
 def _tr_apply(engine, action):
     if action[0] == "custom":                      # ("custom", board) - from Make mode
-        _tr_reset(action[1].copy(), None, "Make mode position")
+        _tr_reset(action[1].copy(), None, "Custom position")
         return
     if action[0] == "load":
         row = db.get_game(engine, action[1])
@@ -522,19 +531,28 @@ def tr_load_dialog(engine):
         st.write("No saved training lines yet. Make some moves and press 💾 Save.")
         return
     st.caption("Tap a line to load it onto the board.")
-    for r in rows:
-        sans, _, _ = db.pgn_to_positions(r["pgn"])
-        tag = "Make mode · " if _from_make(r["pgn"]) and "make mode" not in r["title"].lower() else ""
-        label = f"{tag}{r['title']} · {len(sans)} moves · {(r['updated_at'] or r['created_at']):%b %d}"
-        with st.container(horizontal=True, vertical_alignment="center"):
-            if st.button(label, key=f"trload_{r['id']}"):
-                _tr_request(engine, ("load", r["id"]))
-            if st.button("🗑", key=f"trdel_{r['id']}", help="Delete this line"):
-                db.delete_game(engine, r["id"])
-                if st.session_state.tr_game_id == r["id"]:
-                    st.session_state.tr_game_id = None
-                st.session_state.tr_show_load = True
-                st.rerun()
+
+    def group(title, make: bool):
+        mine = [r for r in rows if _from_make(r["pgn"]) == make]
+        st.markdown(f"#### {title}")
+        if not mine:
+            st.caption("None yet.")
+        for r in mine:
+            sans, _, _ = db.pgn_to_positions(r["pgn"])
+            label = f"{r['title']} · {_moves(len(sans))} · {(r['updated_at'] or r['created_at']):%b %d}"
+            with st.container(horizontal=True, vertical_alignment="center"):
+                if st.button(label, key=f"trload_{r['id']}"):
+                    _tr_request(engine, ("load", r["id"]))
+                if st.button("🗑", key=f"trdel_{r['id']}", help="Delete this line"):
+                    db.delete_game(engine, r["id"])
+                    if st.session_state.tr_game_id == r["id"]:
+                        st.session_state.tr_game_id = None
+                    st.session_state.tr_show_load = True
+                    st.rerun()
+
+    group("Normal mode", make=False)
+    st.divider()
+    group("Make mode", make=True)
     if st.button("Cancel", key="trload_cancel"):
         st.rerun()
 
@@ -824,8 +842,8 @@ def main():
     if not is_neon:
         st.sidebar.warning("No DATABASE_URL set - using a local SQLite file. "
                            "Set your Neon URL to persist games in the cloud.")
-    pages = {"Play vs AI": page_vs_ai, "Training mode": page_training, "Openings": page_openings,
-             "Make mode": page_make}
+    pages = {"Play vs AI": page_vs_ai, "Make mode": page_make, "Training mode": page_training,
+             "Openings": page_openings}
     st.session_state.setdefault("page", "Play vs AI")
     for name in pages:
         active = st.session_state.page == name
