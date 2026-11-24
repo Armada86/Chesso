@@ -281,7 +281,7 @@ def _ai_apply(engine, action):
 
 def _ai_request(engine, action):
     """Run an action that replaces the current game; ask first if one is in progress."""
-    if action[0] == "custom":                      # started from Make mode: go to the game
+    if action[0] in ("custom", "load"):            # may start on another page (Make mode)
         st.session_state.page = "Play vs AI"
     if _ai_in_progress():
         st.session_state.confirm_action = action
@@ -307,29 +307,49 @@ def _ai_label(r, sans, finished: bool) -> str:
     return " · ".join(bits)
 
 
+def _ai_game_rows(engine, rows, is_finished: bool, *, prefix: str, reopen: str):
+    """Rows of AI games: tap to resume (in progress) or review (finished), 🗑 to delete."""
+    ss = st.session_state
+    for r in rows:
+        sans, _, _ = db.pgn_to_positions(r["pgn"])
+        with st.container(horizontal=True, vertical_alignment="center"):
+            if st.button(_ai_label(r, sans, is_finished), key=f"{prefix}load_{r['id']}"):
+                ss.page = "Play vs AI"                # may be opened from Make mode
+                if is_finished:                       # just look at it; your current game stays put
+                    ss.ai_review = r["id"]
+                    ss.pop(f"slider_{r['id']}", None)
+                    st.rerun()
+                _ai_request(engine, ("load", r["id"]))
+            if st.button("🗑", key=f"{prefix}del_{r['id']}", help="Delete this game"):
+                db.delete_game(engine, r["id"])
+                ss[reopen] = True
+                st.rerun()
+
+
+def _tr_rows(engine, rows, *, prefix: str, reopen: str):
+    """Rows of saved training lines: tap to load, 🗑 to delete."""
+    ss = st.session_state
+    for r in rows:
+        sans, _, _ = db.pgn_to_positions(r["pgn"])
+        label = f"{r['title']} · {_moves(len(sans))} · {(r['updated_at'] or r['created_at']):%b %d}"
+        with st.container(horizontal=True, vertical_alignment="center"):
+            if st.button(label, key=f"{prefix}load_{r['id']}"):
+                _tr_request(engine, ("load", r["id"]))
+            if st.button("🗑", key=f"{prefix}del_{r['id']}", help="Delete this line"):
+                db.delete_game(engine, r["id"])
+                if ss.get("tr_game_id") == r["id"]:
+                    ss.tr_game_id = None
+                ss[reopen] = True
+                st.rerun()
+
+
 @st.dialog("Your games vs the AI")
 def load_dialog(engine):
-    ss = st.session_state
     in_progress = db.list_in_progress(engine)
     finished = db.list_games(engine, mode="vs_ai", status="finished")
     if not in_progress and not finished:
         st.write("No saved games yet. Press 💾 Save during a game, or finish one.")
         return
-
-    def game_rows(rows, is_finished):
-        for r in rows:
-            sans, _, _ = db.pgn_to_positions(r["pgn"])
-            with st.container(horizontal=True, vertical_alignment="center"):
-                if st.button(_ai_label(r, sans, is_finished), key=f"load_{r['id']}"):
-                    if is_finished:               # just look at it; your current game stays put
-                        ss.ai_review = r["id"]
-                        ss.pop(f"slider_{r['id']}", None)
-                        st.rerun()
-                    _ai_request(engine, ("load", r["id"]))
-                if st.button("🗑", key=f"del_{r['id']}", help="Delete this game"):
-                    db.delete_game(engine, r["id"])
-                    ss.show_load = True
-                    st.rerun()
 
     def group(title, make: bool):
         mine = lambda rows: [r for r in rows if _from_make(r["pgn"]) == make]
@@ -339,10 +359,10 @@ def load_dialog(engine):
             st.caption("None yet.")
         if wip:
             st.caption("In progress - tap to resume")
-            game_rows(wip, False)
+            _ai_game_rows(engine, wip, False, prefix="ai", reopen="show_load")
         if done:
             st.caption("Finished - tap to review")
-            game_rows(done, True)
+            _ai_game_rows(engine, done, True, prefix="ai", reopen="show_load")
 
     group("Normal mode", make=False)
     st.divider()
@@ -515,7 +535,7 @@ def _tr_apply(engine, action):
 
 def _tr_request(engine, action):
     """Replace the board; ask first if it holds unsaved moves."""
-    if action[0] == "custom":
+    if action[0] in ("custom", "load"):
         st.session_state.page = "Training mode"
     if _tr_dirty():
         st.session_state.tr_confirm = action
@@ -537,18 +557,7 @@ def tr_load_dialog(engine):
         st.markdown(f"#### {title}")
         if not mine:
             st.caption("None yet.")
-        for r in mine:
-            sans, _, _ = db.pgn_to_positions(r["pgn"])
-            label = f"{r['title']} · {_moves(len(sans))} · {(r['updated_at'] or r['created_at']):%b %d}"
-            with st.container(horizontal=True, vertical_alignment="center"):
-                if st.button(label, key=f"trload_{r['id']}"):
-                    _tr_request(engine, ("load", r["id"]))
-                if st.button("🗑", key=f"trdel_{r['id']}", help="Delete this line"):
-                    db.delete_game(engine, r["id"])
-                    if st.session_state.tr_game_id == r["id"]:
-                        st.session_state.tr_game_id = None
-                    st.session_state.tr_show_load = True
-                    st.rerun()
+        _tr_rows(engine, mine, prefix="tr", reopen="tr_show_load")
 
     group("Normal mode", make=False)
     st.divider()
@@ -724,18 +733,23 @@ def _mk_request(engine, action):
     st.rerun()
 
 
-@st.dialog("Your saved positions")
+@st.dialog("Your Make mode saves")
 def mk_load_dialog(engine):
-    rows = db.list_games(engine, mode="position", status=None)
-    if not rows:
-        st.write("No saved positions yet. Build one and press 💾 Save.")
-        return
-    st.caption("Tap a position to load it onto the board.")
-    for r in rows:
+    positions = db.list_games(engine, mode="position", status=None)
+    ai_wip = [r for r in db.list_in_progress(engine) if _from_make(r["pgn"])]
+    ai_done = [r for r in db.list_games(engine, mode="vs_ai", status="finished") if _from_make(r["pgn"])]
+    lines = [r for r in db.list_games(engine, mode="training", status=None) if _from_make(r["pgn"])]
+
+    st.markdown("#### Positions")
+    if not positions:
+        st.caption("None yet. Build one and press 💾 Save.")
+    else:
+        st.caption("Tap to load it onto the board.")
+    for r in positions:
         _, boards, _ = db.pgn_to_positions(r["pgn"])
-        n = len(boards[0].piece_map())
         side = "White" if boards[0].turn == chess.WHITE else "Black"
-        label = f"{r['title']} · {n} pieces · {side} first · {(r['updated_at'] or r['created_at']):%b %d}"
+        label = (f"{r['title']} · {len(boards[0].piece_map())} pieces · {side} first · "
+                 f"{(r['updated_at'] or r['created_at']):%b %d}")
         with st.container(horizontal=True, vertical_alignment="center"):
             if st.button(label, key=f"mkload_{r['id']}"):
                 _mk_request(engine, ("load", r["id"]))
@@ -745,6 +759,23 @@ def mk_load_dialog(engine):
                     st.session_state.mk_game_id = None
                 st.session_state.mk_show_load = True
                 st.rerun()
+
+    st.divider()
+    st.markdown("#### Games vs the AI")
+    if not ai_wip and not ai_done:
+        st.caption("None yet.")
+    if ai_wip:
+        st.caption("In progress - tap to resume")
+        _ai_game_rows(engine, ai_wip, False, prefix="mkai", reopen="mk_show_load")
+    if ai_done:
+        st.caption("Finished - tap to review")
+        _ai_game_rows(engine, ai_done, True, prefix="mkai", reopen="mk_show_load")
+
+    st.divider()
+    st.markdown("#### Training lines")
+    if not lines:
+        st.caption("None yet.")
+    _tr_rows(engine, lines, prefix="mktr", reopen="mk_show_load")
     if st.button("Cancel", key="mkload_cancel"):
         st.rerun()
 
@@ -802,7 +833,7 @@ def page_make(engine):
     with st.container(horizontal=True):
         if st.button("💾 Save", key="mk_save", type="primary", disabled=not board.piece_map()):
             st.toast(f"Position saved (#{_mk_save(engine)}).", icon="💾")
-        if st.button("📂 Load", key="mk_load", help="Open one of your saved positions"):
+        if st.button("📂 Load", key="mk_load", help="Open your saved positions, games and training lines from Make mode"):
             ss.mk_show_load = True
             st.rerun()
 
