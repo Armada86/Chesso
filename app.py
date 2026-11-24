@@ -113,7 +113,8 @@ def replay_view(engine, game_id: int, *, on_close=None, extra=None):
         ss[key] = max(0, min(last, to))
 
     # Title and explanation first, so the board and the step buttons end up on one screen.
-    st.markdown(f"#### {game['title'] if is_opening else 'Review - ' + game['title']}")
+    tag = " · Make mode" if _from_make(game["pgn"]) and "make mode" not in game["title"].lower() else ""
+    st.markdown(f"#### {game['title'] if is_opening else 'Review - ' + game['title'] + tag}")
     if is_opening:
         if info["intro"]:
             st.caption(info["intro"])
@@ -237,7 +238,8 @@ def _ai_save_in_progress(engine) -> int:
     if ss.get("ai_game_id"):
         db.update_game(engine, ss.ai_game_id, pgn=pgn, result="*", status="in_progress")
     else:
-        ss.ai_game_id = db.save_game(engine, mode="vs_ai", title=f"{white} vs {black}", pgn=pgn,
+        ss.ai_game_id = db.save_game(engine, mode="vs_ai",
+                                     title=f"{white} vs {black}{_make_suffix(ss.ai_board)}", pgn=pgn,
                                      level=ss.ai_level, human_color=ss.ai_color,
                                      status="in_progress")
     return ss.ai_game_id
@@ -289,8 +291,18 @@ def _ai_request(engine, action):
     st.rerun()
 
 
+def _from_make(pgn: str) -> bool:
+    """True for games that started from a hand-made position (the PGN then carries a FEN header)."""
+    return '[FEN "' in pgn
+
+
+def _make_suffix(board: chess.Board) -> str:
+    return " · Make mode" if board.root().fen() != chess.STARTING_FEN else ""
+
+
 def _ai_label(r, sans, finished: bool) -> str:
-    bits = [r["level"], (r["human_color"] or "white").title()]
+    bits = ["Make mode"] if _from_make(r["pgn"]) else []
+    bits += [r["level"], (r["human_color"] or "white").title()]
     if finished:
         bits.append(r["result"])
     bits += [f"{len(sans)} moves", f"{(r['updated_at'] or r['created_at']):%b %d}"]
@@ -431,8 +443,8 @@ def _save_ai_game(engine, board, human):
         db.update_game(engine, ss.ai_game_id, pgn=pgn, result=result, status="finished")
         gid = ss.ai_game_id
     else:
-        gid = db.save_game(engine, mode="vs_ai", title=f"{white} vs {black}", pgn=pgn,
-                           result=result, level=ss.ai_level, human_color=ss.ai_color)
+        gid = db.save_game(engine, mode="vs_ai", title=f"{white} vs {black}{_make_suffix(board)}",
+                           pgn=pgn, result=result, level=ss.ai_level, human_color=ss.ai_color)
         ss.ai_game_id = gid
     ss.ai_saved = True
     st.success(f"Game over ({result}). Saved automatically - find it under 📂 Load → Finished.")
@@ -479,7 +491,7 @@ def _tr_save(engine) -> int:
 
 def _tr_apply(engine, action):
     if action[0] == "custom":                      # ("custom", board) - from Make mode
-        _tr_reset(action[1].copy(), None, "Custom position")
+        _tr_reset(action[1].copy(), None, "Make mode position")
         return
     if action[0] == "load":
         row = db.get_game(engine, action[1])
@@ -512,7 +524,8 @@ def tr_load_dialog(engine):
     st.caption("Tap a line to load it onto the board.")
     for r in rows:
         sans, _, _ = db.pgn_to_positions(r["pgn"])
-        label = f"{r['title']} · {len(sans)} moves · {(r['updated_at'] or r['created_at']):%b %d}"
+        tag = "Make mode · " if _from_make(r["pgn"]) and "make mode" not in r["title"].lower() else ""
+        label = f"{tag}{r['title']} · {len(sans)} moves · {(r['updated_at'] or r['created_at']):%b %d}"
         with st.container(horizontal=True, vertical_alignment="center"):
             if st.button(label, key=f"trload_{r['id']}"):
                 _tr_request(engine, ("load", r["id"]))
