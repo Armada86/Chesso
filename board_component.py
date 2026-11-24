@@ -56,3 +56,21 @@ def chess_board(board: chess.Board, *, key: str, flipped: bool = False,
     promo = {"q": chess.QUEEN, "r": chess.ROOK, "b": chess.BISHOP, "n": chess.KNIGHT}.get(value.get("promo"))
     move = chess.Move(chess.parse_square(value["from"]), chess.parse_square(value["to"]), promotion=promo)
     return move if move in board.legal_moves else None  # server-side legality check
+
+
+def edit_board(board: chess.Board, *, key: str, flipped: bool = False):
+    """Position editor. Returns (square_name, piece_symbol_or_'') for a new placement, else None."""
+    value = _component(
+        fen=board.board_fen() + f" {board.turn}",    # changes whenever the pieces change
+        position={chess.square_name(s): p.symbol() for s, p in board.piece_map().items()},
+        legal={}, flipped=flipped, interactive=False, edit=True,
+        turn_white=True, last=None, check=None, pieces=_piece_svgs(),
+        key=key, default=None,
+    )
+    if not value or not value.get("edit"):
+        return None
+    seen = f"_seen_{key}"
+    if st.session_state.get(seen) == value["id"]:
+        return None
+    st.session_state[seen] = value["id"]
+    return value["square"], value["piece"]

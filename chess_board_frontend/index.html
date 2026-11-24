@@ -18,6 +18,13 @@
   .ring{position:absolute;inset:4%;border-radius:50%;border:5px solid rgba(20,85,30,.5);pointer-events:none;box-sizing:border-box}
   .coord{position:absolute;font-size:clamp(8px,2.2vw,12px);font-weight:bold;pointer-events:none;opacity:.7}
   .coord.f{right:3%;bottom:1%}.coord.r{left:3%;top:1%}
+  #palette{margin-top:8px;display:none}
+  #palette.show{display:block}
+  #palette .row{display:flex;gap:4px;margin-bottom:4px}
+  #palette button{flex:1;min-width:0;aspect-ratio:1/1;border:2px solid #bbb;border-radius:8px;background:#f0d9b5;padding:2%;cursor:pointer}
+  #palette button.on{border-color:#c53948;background:#ffe3a8;box-shadow:0 0 0 2px #c53948}
+  #palette button.erase{background:#eee;font-size:20px;line-height:1}
+  #palette svg{width:100%;height:100%}
   #promo{display:none;position:absolute;inset:0;background:rgba(0,0,0,.55);
          align-items:center;justify-content:center;gap:2%}
   #promo.show{display:flex}
@@ -25,12 +32,12 @@
   #promo svg{width:100%;height:100%}
 </style></head>
 <body>
-<div id="wrap"><div id="board"></div><div id="promo"></div></div>
+<div id="wrap"><div id="board"></div><div id="palette"></div><div id="promo"></div></div>
 <script>
 const send = (type, extra) => window.parent.postMessage(
   Object.assign({isStreamlitMessage: true, type: "streamlit:" + type}, extra), "*");
 const FILES = "abcdefgh";
-let A = null, selected = null, lastFen = null, pending = null;
+let A = null, selected = null, lastFen = null, pending = null, tool = null;
 
 function setHeight(){ send("setFrameHeight", {height: document.getElementById("wrap").offsetHeight + 4}); }
 new ResizeObserver(setHeight).observe(document.getElementById("wrap"));
@@ -55,7 +62,7 @@ function render(){
       if (A.last && (A.last[0] === name || A.last[1] === name)) el.classList.add("last");
       if (A.check === name) { el.classList.add("check"); el.style.setProperty("--bg", isLight ? "#f0d9b5" : "#b58863"); }
       if (selected === name) el.classList.add("sel");
-      if (legal[name]) el.classList.add("movable");
+      if (legal[name] || A.edit) el.classList.add("movable");
       if (pos[name]) el.innerHTML = A.pieces[pos[name]];
       if (name in targets) {
         const m = document.createElement("div");
@@ -69,7 +76,32 @@ function render(){
       boardEl.appendChild(el);
     }
   }
+  renderPalette();
   setHeight();
+}
+
+function renderPalette(){
+  const pal = document.getElementById("palette");
+  pal.classList.toggle("show", !!A.edit);
+  if (!A.edit) { pal.innerHTML = ""; return; }
+  pal.innerHTML = "";
+  const rows = [["K","Q","R","B","N","P"],["k","q","r","b","n","p"]];
+  rows.forEach((syms, i) => {
+    const row = document.createElement("div"); row.className = "row";
+    syms.forEach(sym => {
+      const b = document.createElement("button"); b.innerHTML = A.pieces[sym];
+      if (tool === sym) b.className = "on";
+      b.onclick = () => { tool = (tool === sym) ? null : sym; renderPalette(); };
+      row.appendChild(b);
+    });
+    if (i === 1) {
+      const e = document.createElement("button"); e.className = "erase" + (tool === "erase" ? " on" : "");
+      e.textContent = "\u2715"; e.title = "Erase";
+      e.onclick = () => { tool = (tool === "erase") ? null : "erase"; renderPalette(); };
+      row.appendChild(e);
+    }
+    pal.appendChild(row);
+  });
 }
 
 function emit(from, to, promo){
@@ -80,6 +112,14 @@ function emit(from, to, promo){
 }
 
 function onClick(name){
+  if (A.edit) {                       // position editor: place / erase with the chosen tool
+    if (!tool) return;
+    let piece = (tool === "erase") ? "" : tool;
+    if (piece && A.position[name] === piece) piece = "";   // tapping the same piece again removes it
+    send("setComponentValue", {dataType: "json",
+      value: {edit: true, square: name, piece: piece, id: Date.now() + "-" + Math.random().toString(36).slice(2)}});
+    return;
+  }
   if (!A.interactive) return;
   const legal = A.legal || {};
   if (selected && legal[selected] && name in legal[selected]) {

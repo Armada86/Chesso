@@ -10,9 +10,10 @@ import streamlit as st
 
 import db
 import openings
-from board_component import chess_board
+from board_component import chess_board, edit_board
 from captures import captured_pieces, material_lead
 from chess_ai import LEVELS, choose_move
+from position_check import validate_position
 
 st.set_page_config(page_title="Chesso", page_icon="♞", layout="wide")
 
@@ -25,11 +26,15 @@ def get_engine():
     return engine, is_neon
 
 
-def san_table(board_or_sans):
-    sans = board_or_sans
-    rows = []
-    for i in range(0, len(sans), 2):
-        rows.append(f"{i // 2 + 1}. {sans[i]}" + (f"  {sans[i + 1]}" if i + 1 < len(sans) else ""))
+def san_table(sans, first_black: bool = False):
+    """Numbered move list. `first_black` is for custom positions where Black moves first."""
+    rows, n, i = [], 1, 0
+    if first_black and sans:
+        rows.append(f"1... {sans[0]}")
+        i, n = 1, 2
+    while i < len(sans):
+        rows.append(f"{n}. {sans[i]}" + (f"  {sans[i + 1]}" if i + 1 < len(sans) else ""))
+        i, n = i + 2, n + 1
     return "\n".join(rows)
 
 
@@ -127,7 +132,7 @@ def replay_view(engine, game_id: int, *, on_close=None, extra=None):
             st.info(f"💬 **{sans[ply - 1]}** - {info['notes'][ply - 1]}")
         if last:
             st.slider("Move", 0, last, key=key)
-        st.code(san_table(sans) or "No moves", language=None)
+        st.code(san_table(sans, boards[0].turn == chess.BLACK) or "No moves", language=None)
         st.download_button("Download PGN", game["pgn"], file_name=f"chesso_{game_id}.pgn")
         with st.container(horizontal=True):
             if extra:
@@ -184,7 +189,7 @@ def page_openings(engine):
 
 # --------------------------------------------------------------------------- AI mode
 def _sans(board: chess.Board):
-    tmp, out = chess.Board(), []
+    tmp, out = board.root(), []
     for m in board.move_stack:
         out.append(tmp.san(m))
         tmp.push(m)
@@ -204,9 +209,9 @@ def _ai_players():
     return (me, ai) if ss.ai_color == "white" else (ai, me)
 
 
-def _ai_new_game(level: str, color: str):
+def _ai_new_game(level: str, color: str, board: chess.Board | None = None):
     ss = st.session_state
-    ss.ai_board, ss.ai_level, ss.ai_color = chess.Board(), level, color
+    ss.ai_board, ss.ai_level, ss.ai_color = board or chess.Board(), level, color
     ss.ai_saved, ss.ai_resigned, ss.ai_game_id = False, False, None
     ss.ai_review, ss.ai_redo = None, []
 
@@ -240,7 +245,8 @@ def _ai_save_in_progress(engine) -> int:
 
 def _ai_human_moves(board: chess.Board, human: bool) -> int:
     """How many of the moves played so far were the human's."""
-    return sum(1 for i in range(len(board.move_stack)) if (i % 2 == 0) == (human == chess.WHITE))
+    first = board.root().turn          # who moved first (not always White in a custom position)
+    return sum(1 for i in range(len(board.move_stack)) if (first if i % 2 == 0 else not first) == human)
 
 
 def _ai_back():
@@ -266,12 +272,16 @@ def _ai_forward():
 def _ai_apply(engine, action):
     if action[0] == "load":
         _ai_load_game(engine, action[1])
+    elif action[0] == "custom":  # ("custom", board, level, color) - from Make mode
+        _ai_new_game(action[2], action[3], action[1].copy())
     else:  # ("new", level, color)
         _ai_new_game(action[1], action[2])
 
 
 def _ai_request(engine, action):
     """Run an action that replaces the current game; ask first if one is in progress."""
+    if action[0] == "custom":                      # started from Make mode: go to the game
+        st.session_state.page = "Play vs AI"
     if _ai_in_progress():
         st.session_state.confirm_action = action
     else:
@@ -397,7 +407,7 @@ def page_vs_ai(engine):
                 ss.ai_resigned = True
                 ss.ai_redo = []
                 st.rerun()
-        st.code(san_table(_sans(board)) or "No moves yet", language=None)
+        st.code(san_table(_sans(board), board.root().turn == chess.BLACK) or "No moves yet", language=None)
         _save_ai_game(engine, board, human)
 
     # The page above is already drawn (showing your move), so the pause below is visible.
@@ -436,7 +446,8 @@ def _tr_moves(board: chess.Board) -> list[str]:
 def _tr_dirty() -> bool:
     """Moves on the board that aren't stored in the database yet."""
     ss = st.session_state
-    return bool(ss.tr_board.move_stack) and _tr_moves(ss.tr_board) != ss.tr_saved_moves
+    board = ss.get("tr_board")          # not created until Training mode is first opened
+    return bool(board is not None and board.move_stack and _tr_moves(board) != ss.tr_saved_moves)
 
 
 def _tr_reset(board=None, game_id=None, title=""):
@@ -467,6 +478,9 @@ def _tr_save(engine) -> int:
 
 
 def _tr_apply(engine, action):
+    if action[0] == "custom":                      # ("custom", board) - from Make mode
+        _tr_reset(action[1].copy(), None, "Custom position")
+        return
     if action[0] == "load":
         row = db.get_game(engine, action[1])
         if not row:
@@ -480,6 +494,8 @@ def _tr_apply(engine, action):
 
 def _tr_request(engine, action):
     """Replace the board; ask first if it holds unsaved moves."""
+    if action[0] == "custom":
+        st.session_state.page = "Training mode"
     if _tr_dirty():
         st.session_state.tr_confirm = action
     else:
@@ -577,7 +593,65 @@ def page_training(engine):
                 st.rerun()
             if st.button("🆕 New", key="tr_new", help="Start from the initial position"):
                 _tr_request(engine, ("new",))
-        st.code(san_table(_sans(board)) or "No moves yet", language=None)
+        st.code(san_table(_sans(board), board.root().turn == chess.BLACK) or "No moves yet", language=None)
+
+
+# --------------------------------------------------------------------------- Make mode
+def page_make(engine):
+    """Build any position by hand, then start a game from it (after a legality check)."""
+    ss = st.session_state
+    ss.setdefault("mk_board", chess.Board(None))      # an empty board
+    ss.setdefault("mk_flip", False)
+    board: chess.Board = ss.mk_board
+
+    st.markdown("#### Make a position")
+    st.caption("Pick a piece under the board, then tap squares to place it. "
+               "Tap a placed piece again to remove it, or choose ✕ to erase.")
+    placed = edit_board(board, key="mk_board_ui", flipped=ss.mk_flip)
+    if placed:
+        square, piece = placed
+        sq = chess.parse_square(square)
+        if piece:
+            board.set_piece_at(sq, chess.Piece.from_symbol(piece))
+        else:
+            board.remove_piece_at(sq)
+        st.rerun()
+
+    with st.container(horizontal=True):
+        if st.button("🧹 Clear", key="mk_clear", help="Remove every piece"):
+            ss.mk_board = chess.Board(None)
+            st.rerun()
+        if st.button("♟ Start position", key="mk_std", help="Set up the normal starting position"):
+            ss.mk_board = chess.Board()
+            st.rerun()
+        if st.button("🔄 Flip", key="mk_flip_btn"):
+            ss.mk_flip = not ss.mk_flip
+            st.rerun()
+
+    pick = lambda label, options, default, key: (
+        st.segmented_control(label, options, default=default, key=key) or default)
+    first = pick("Who moves first?", ["White", "Black"], "White", "mk_first")
+    opponent = pick("Play against", ["AI", "Myself"], "AI", "mk_opp")
+    level, colour = None, None
+    if opponent == "AI":
+        level = pick("AI level", list(LEVELS), ss.get("ai_level", "Medium"), "mk_level")
+        colour = pick("You play", ["White", "Black"], "White", "mk_colour")
+    castling = st.checkbox("Allow castling when a king and rook are on their starting squares",
+                           value=True, key="mk_castle")
+
+    if st.button("▶ Start game", key="mk_start", type="primary", use_container_width=True):
+        start = board.copy(stack=False)
+        start.turn = chess.WHITE if first == "White" else chess.BLACK
+        start.castling_rights = chess.BB_CORNERS if castling else chess.BB_EMPTY
+        start.castling_rights = start.clean_castling_rights()   # only where king and rook are home
+        start.ep_square, start.halfmove_clock, start.fullmove_number = None, 0, 1
+        problems = validate_position(start)
+        if problems:
+            st.error("This position can't be played yet:\n\n" + "\n".join(f"- {p}" for p in problems))
+        elif opponent == "AI":
+            _ai_request(engine, ("custom", start, level, colour.lower()))
+        else:
+            _tr_request(engine, ("custom", start))
 
 
 # --------------------------------------------------------------------------------- main
@@ -594,7 +668,8 @@ def main():
     if not is_neon:
         st.sidebar.warning("No DATABASE_URL set - using a local SQLite file. "
                            "Set your Neon URL to persist games in the cloud.")
-    pages = {"Play vs AI": page_vs_ai, "Training mode": page_training, "Openings": page_openings}
+    pages = {"Play vs AI": page_vs_ai, "Training mode": page_training, "Openings": page_openings,
+             "Make mode": page_make}
     st.session_state.setdefault("page", "Play vs AI")
     for name in pages:
         active = st.session_state.page == name

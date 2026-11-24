@@ -86,8 +86,8 @@ def board_to_pgn(board: chess.Board, *, white="White", black="Black",
                  result: str | None = None, start_fen: str | None = None) -> str:
     """Serialize a board's move stack to PGN."""
     game = chess.pgn.Game()
-    base = chess.Board(start_fen) if start_fen else chess.Board()
-    if start_fen:
+    base = chess.Board(start_fen) if start_fen else board.root()   # custom start positions keep their FEN
+    if base.fen() != chess.STARTING_FEN:
         game.setup(base)
     game.headers["White"], game.headers["Black"] = white, black
     node = game

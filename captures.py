@@ -9,7 +9,7 @@ VALUE = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.Q
 
 def captured_pieces(board: chess.Board) -> dict[bool, list[chess.Piece]]:
     """{color: pieces that color has captured}, rebuilt from the move list."""
-    replay, out = chess.Board(), {chess.WHITE: [], chess.BLACK: []}
+    replay, out = board.root(), {chess.WHITE: [], chess.BLACK: []}
     for mv in board.move_stack:
         if replay.is_capture(mv):
             taken = (chess.Piece(chess.PAWN, not replay.turn) if replay.is_en_passant(mv)

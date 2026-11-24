@@ -103,3 +103,82 @@ def test_openings_are_valid_and_seeded_once(tmp_path):
     assert openings.seed(eng) == 10
     assert openings.seed(eng) == 0                   # idempotent
     assert len(db.list_games(eng, mode="opening", status=None)) == 10
+
+
+# ---------------------------------------------------------------- Make mode: position checks
+def _problems(fen, turn=None):
+    from position_check import validate_position
+    b = chess.Board(fen)
+    if turn is not None:
+        b.turn = turn
+    return validate_position(b)
+
+
+def test_standard_and_legal_custom_positions_pass():
+    assert _problems(chess.STARTING_FEN) == []
+    assert _problems("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1") == []
+    assert _problems("rnbqkbnr/pppppppp/8/8/8/8/PPPPPP2/RNBBKBBR w - - 0 1") == []   # 2 promotions available
+
+
+def test_kings_required():
+    p = _problems("8/8/8/8/8/8/8/8 w - - 0 1")
+    assert any("White must have exactly one king" in m for m in p)
+    assert any("Black must have exactly one king" in m for m in p)
+    p = _problems("kk6/8/8/8/8/8/8/4K3 w - - 0 1")
+    assert any("Black must have exactly one king (found 2)" in m for m in p)
+
+
+def test_two_bishops_on_same_colour_needs_a_promotion():
+    # d1 and f1 are both light squares; with all 8 pawns that is impossible
+    p = _problems("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBBKBNR w - - 0 1")
+    assert len(p) == 1 and "2 bishops on light squares" in p[0] and "all 8 pawns" in p[0]
+    # one pawn missing makes a promoted bishop possible
+    assert _problems("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPP1/RNBBKBNR w - - 0 1") == []
+    # one light + one dark bishop is the normal pair
+    assert _problems("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RN1QKBNR w - - 0 1") == []
+
+
+def test_extra_pieces_need_missing_pawns():
+    assert any("2 queens" in m for m in _problems("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBQR w - - 0 1"))
+    assert any("3 knights" in m for m in _problems("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKNNR w - - 0 1"))
+    # 2 extra pieces, only 1 pawn missing
+    p = _problems("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPP1/RNBQKBQQ w - - 0 1")
+    assert any("1 White pawn is missing and 2 would be needed" in m for m in p)
+
+
+def test_pawn_rules():
+    assert any("9 pawns" in m for m in _problems("4k3/pppppppp/p7/8/8/8/PPPPPPPP/4K3 w - - 0 1"))
+    assert any("first or last rank (a8)" in m for m in _problems("P3k3/8/8/8/8/8/8/4K3 w - - 0 1"))
+    assert any("first or last rank (h1)" in m for m in _problems("4k3/8/8/8/8/8/8/4K2p w - - 0 1"))
+
+
+def test_check_and_game_over_rules():
+    assert any("touching" in m for m in _problems("8/8/8/3kK3/8/8/8/8 w - - 0 1"))
+    # Black is in check but White is to move
+    assert any("Black's king is in check, but it is White's turn" in m
+               for m in _problems("4k3/8/8/8/8/8/8/4RK2 w - - 0 1"))
+    # same position with Black to move is a normal position
+    assert _problems("4k3/8/8/8/8/8/8/4RK2 b - - 0 1") == []
+    assert any("checkmated" in m for m in _problems("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1"))
+    assert any("stalemate" in m for m in _problems("7k/5Q2/8/8/8/8/8/6K1 b - - 0 1"))
+    assert any("enough pieces" in m for m in _problems("4k3/8/8/8/8/8/8/4K3 w - - 0 1"))
+
+
+def test_custom_start_position_round_trips_through_pgn():
+    start = chess.Board("4k3/4p3/8/8/8/8/4P3/R3K3 b - - 0 1")     # Black moves first
+    b = start.copy()
+    for uci in ("e7e5", "e2e4", "e8e7"):
+        b.push_uci(uci)
+    pgn = db.board_to_pgn(b, white="A", black="B", result="*")
+    assert '[FEN "4k3/4p3/8/8/8/8/4P3/R3K3 b - - 0 1"]' in pgn
+    sans, boards, _ = db.pgn_to_positions(pgn)
+    assert sans == ["e5", "e4", "Ke7"] and boards[-1].fen() == b.fen()
+    assert boards[-1].root().fen() == start.fen()                  # the custom start survives loading
+
+
+def test_captures_use_the_custom_start_not_the_standard_one():
+    from captures import captured_pieces
+    b = chess.Board("4k3/8/8/3p4/4P3/8/8/R3K3 w - - 0 1")          # white pawn e4, black pawn d5
+    b.push_uci("e4d5")                                             # exd5
+    caps = captured_pieces(b)
+    assert [p.symbol() for p in caps[chess.WHITE]] == ["p"] and caps[chess.BLACK] == []
