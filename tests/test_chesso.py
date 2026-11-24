@@ -182,3 +182,16 @@ def test_captures_use_the_custom_start_not_the_standard_one():
     b.push_uci("e4d5")                                             # exd5
     caps = captured_pieces(b)
     assert [p.symbol() for p in caps[chess.WHITE]] == ["p"] and caps[chess.BLACK] == []
+
+
+def test_positions_save_and_load_even_when_illegal(tmp_path):
+    eng = db.make_engine(f"sqlite:///{tmp_path/'p.db'}")
+    for fen in ("8/8/8/8/8/8/8/8 w - - 0 1",                          # empty board
+                "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1",               # Black to move, castling on
+                "4k3/8/8/8/8/8/8/4KQQ1 w - - 0 1"):
+        pgn = db.board_to_pgn(chess.Board(fen), white="White", black="Black", result="*")
+        gid = db.save_game(eng, mode="position", title="p", pgn=pgn)
+        _, boards, _ = db.pgn_to_positions(db.get_game(eng, gid)["pgn"])
+        assert boards[0].fen() == chess.Board(fen).fen()
+    assert len(db.list_games(eng, mode="position", status=None)) == 3
+    assert db.list_games(eng, mode="training", status=None) == []     # kept apart from the other lists

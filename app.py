@@ -597,11 +597,149 @@ def page_training(engine):
 
 
 # --------------------------------------------------------------------------- Make mode
+def _mk_state():
+    ss = st.session_state
+    if "mk_board" not in ss:
+        ss.mk_board, ss.mk_flip = chess.Board(None), False     # an empty board
+        ss.mk_game_id, ss.mk_saved, ss.mk_ver = None, None, 0
+        ss.mk_first_default, ss.mk_castle_default, ss.mk_title_default = "White", True, ""
+    return ss
+
+
+def _mk_values():
+    """Current 'who moves first' / castling / title as chosen on screen."""
+    ss = st.session_state
+    v = ss.mk_ver
+    return (ss.get(f"mk_first_{v}", ss.mk_first_default),
+            ss.get(f"mk_castle_{v}", ss.mk_castle_default),
+            (ss.get(f"mk_title_{v}", ss.mk_title_default) or "").strip())
+
+
+def _mk_position(first: str, castling: bool) -> chess.Board:
+    """The drawn pieces plus the chosen side to move and castling rights."""
+    pos = st.session_state.mk_board.copy(stack=False)
+    pos.turn = chess.WHITE if first == "White" else chess.BLACK
+    pos.castling_rights = chess.BB_CORNERS if castling else chess.BB_EMPTY
+    pos.castling_rights = pos.clean_castling_rights()           # only where king and rook are home
+    pos.ep_square, pos.halfmove_clock, pos.fullmove_number = None, 0, 1
+    return pos
+
+
+def _mk_snapshot():
+    first, castling, _ = _mk_values()
+    return (st.session_state.mk_board.board_fen(), first, castling)
+
+
+def _mk_dirty() -> bool:
+    ss = st.session_state
+    return ss.get("mk_board") is not None and bool(ss.mk_board.piece_map()) and _mk_snapshot() != ss.mk_saved
+
+
+def _mk_reset(board, *, game_id=None, title="", first=None, castling=None):
+    """Replace the drawn position. first/castling None = keep what's selected now."""
+    ss = st.session_state
+    cur_first, cur_castle, _ = _mk_values()
+    ss.mk_board, ss.mk_game_id = board, game_id
+    ss.mk_first_default = first if first is not None else cur_first
+    ss.mk_castle_default = castling if castling is not None else cur_castle
+    ss.mk_title_default = title
+    ss.mk_ver += 1                       # new widget keys -> they show the new defaults
+    ss.mk_saved = _mk_snapshot() if game_id else None
+
+
+def _mk_save(engine) -> int:
+    ss = st.session_state
+    first, castling, title = _mk_values()
+    pgn = db.board_to_pgn(_mk_position(first, castling), white="White", black="Black", result="*")
+    title = title or "Untitled position"
+    if ss.mk_game_id:
+        db.update_game(engine, ss.mk_game_id, pgn=pgn, result="*", status="finished", title=title)
+    else:
+        ss.mk_game_id = db.save_game(engine, mode="position", title=title, pgn=pgn)
+    ss.mk_saved = _mk_snapshot()
+    return ss.mk_game_id
+
+
+def _mk_apply(engine, action):
+    if action[0] == "load":
+        row = db.get_game(engine, action[1])
+        if not row:
+            st.toast("That position no longer exists.")
+            return
+        _, boards, _ = db.pgn_to_positions(row["pgn"])
+        pos = boards[0]
+        pieces = chess.Board(None)                       # just the pieces; side/castling go to the widgets
+        for sq, piece in pos.piece_map().items():
+            pieces.set_piece_at(sq, piece)
+        could_castle = pieces.copy(stack=False)          # would castling be possible at all here?
+        could_castle.castling_rights = chess.BB_CORNERS
+        could_castle.castling_rights = could_castle.clean_castling_rights()
+        # untick the box only if castling was possible but the saved position switched it off
+        castling = bool(pos.castling_rights) or not could_castle.castling_rights
+        _mk_reset(pieces, game_id=row["id"], title=row["title"],
+                  first="White" if pos.turn == chess.WHITE else "Black", castling=castling)
+    elif action[0] == "clear":
+        _mk_reset(chess.Board(None))
+    else:  # "standard"
+        _mk_reset(chess.Board())
+
+
+def _mk_request(engine, action):
+    """Replace the drawn position; ask first if it has changes that aren't saved."""
+    if _mk_dirty():
+        st.session_state.mk_confirm = action
+    else:
+        _mk_apply(engine, action)
+    st.rerun()
+
+
+@st.dialog("Your saved positions")
+def mk_load_dialog(engine):
+    rows = db.list_games(engine, mode="position", status=None)
+    if not rows:
+        st.write("No saved positions yet. Build one and press 💾 Save.")
+        return
+    st.caption("Tap a position to load it onto the board.")
+    for r in rows:
+        _, boards, _ = db.pgn_to_positions(r["pgn"])
+        n = len(boards[0].piece_map())
+        side = "White" if boards[0].turn == chess.WHITE else "Black"
+        label = f"{r['title']} · {n} pieces · {side} first · {(r['updated_at'] or r['created_at']):%b %d}"
+        with st.container(horizontal=True, vertical_alignment="center"):
+            if st.button(label, key=f"mkload_{r['id']}"):
+                _mk_request(engine, ("load", r["id"]))
+            if st.button("🗑", key=f"mkdel_{r['id']}", help="Delete this position"):
+                db.delete_game(engine, r["id"])
+                if st.session_state.mk_game_id == r["id"]:
+                    st.session_state.mk_game_id = None
+                st.session_state.mk_show_load = True
+                st.rerun()
+    if st.button("Cancel", key="mkload_cancel"):
+        st.rerun()
+
+
+@st.dialog("Unsaved position")
+def mk_confirm_dialog(engine, action):
+    st.write("The position on the board isn't saved. Save it before continuing?")
+    if st.button("Save it, then continue", type="primary", use_container_width=True):
+        _mk_save(engine)
+        _mk_apply(engine, action)
+        st.rerun()
+    if st.button("Don't save, just continue", use_container_width=True):
+        _mk_apply(engine, action)
+        st.rerun()
+    if st.button("Cancel", use_container_width=True):
+        st.rerun()
+
+
 def page_make(engine):
     """Build any position by hand, then start a game from it (after a legality check)."""
-    ss = st.session_state
-    ss.setdefault("mk_board", chess.Board(None))      # an empty board
-    ss.setdefault("mk_flip", False)
+    ss = _mk_state()
+    if ss.pop("mk_show_load", False):
+        mk_load_dialog(engine)
+    action = ss.pop("mk_confirm", None)
+    if action:
+        mk_confirm_dialog(engine, action)
     board: chess.Board = ss.mk_board
 
     st.markdown("#### Make a position")
@@ -619,32 +757,37 @@ def page_make(engine):
 
     with st.container(horizontal=True):
         if st.button("🧹 Clear", key="mk_clear", help="Remove every piece"):
-            ss.mk_board = chess.Board(None)
-            st.rerun()
+            _mk_request(engine, ("clear",))
         if st.button("♟ Start position", key="mk_std", help="Set up the normal starting position"):
-            ss.mk_board = chess.Board()
-            st.rerun()
+            _mk_request(engine, ("standard",))
         if st.button("🔄 Flip", key="mk_flip_btn"):
             ss.mk_flip = not ss.mk_flip
             st.rerun()
 
+    v = ss.mk_ver
+    st.text_input("Name", value=ss.mk_title_default, key=f"mk_title_{v}",
+                  placeholder="Name for this position, e.g. Rook endgame",
+                  label_visibility="collapsed")
+    with st.container(horizontal=True):
+        if st.button("💾 Save", key="mk_save", type="primary", disabled=not board.piece_map()):
+            st.toast(f"Position saved (#{_mk_save(engine)}).", icon="💾")
+        if st.button("📂 Load", key="mk_load", help="Open one of your saved positions"):
+            ss.mk_show_load = True
+            st.rerun()
+
     pick = lambda label, options, default, key: (
         st.segmented_control(label, options, default=default, key=key) or default)
-    first = pick("Who moves first?", ["White", "Black"], "White", "mk_first")
+    first = pick("Who moves first?", ["White", "Black"], ss.mk_first_default, f"mk_first_{v}")
     opponent = pick("Play against", ["AI", "Myself"], "AI", "mk_opp")
     level, colour = None, None
     if opponent == "AI":
         level = pick("AI level", list(LEVELS), ss.get("ai_level", "Medium"), "mk_level")
         colour = pick("You play", ["White", "Black"], "White", "mk_colour")
     castling = st.checkbox("Allow castling when a king and rook are on their starting squares",
-                           value=True, key="mk_castle")
+                           value=ss.mk_castle_default, key=f"mk_castle_{v}")
 
     if st.button("▶ Start game", key="mk_start", type="primary", use_container_width=True):
-        start = board.copy(stack=False)
-        start.turn = chess.WHITE if first == "White" else chess.BLACK
-        start.castling_rights = chess.BB_CORNERS if castling else chess.BB_EMPTY
-        start.castling_rights = start.clean_castling_rights()   # only where king and rook are home
-        start.ep_square, start.halfmove_clock, start.fullmove_number = None, 0, 1
+        start = _mk_position(first, castling)
         problems = validate_position(start)
         if problems:
             st.error("This position can't be played yet:\n\n" + "\n".join(f"- {p}" for p in problems))
