@@ -23,7 +23,8 @@
   #palette .row{display:flex;gap:4px;margin-bottom:4px}
   #palette button{flex:1;min-width:0;aspect-ratio:1/1;border:2px solid #bbb;border-radius:8px;background:#f0d9b5;padding:2%;cursor:pointer}
   #palette button.on{border-color:#c53948;background:#ffe3a8;box-shadow:0 0 0 2px #c53948}
-  #palette button.erase{background:#eee;font-size:20px;line-height:1}
+  #palette .row.center{justify-content:center}
+  #palette button.erase{flex:none;width:calc((100% - 20px) / 3);aspect-ratio:2/1;background:#eee;font-size:22px;line-height:1}
   #palette svg{width:100%;height:100%}
   #promo{display:none;position:absolute;inset:0;background:rgba(0,0,0,.55);
          align-items:center;justify-content:center;gap:2%}
@@ -86,7 +87,7 @@ function renderPalette(){
   if (!A.edit) { pal.innerHTML = ""; return; }
   pal.innerHTML = "";
   const rows = [["K","Q","R","B","N","P"],["k","q","r","b","n","p"]];
-  rows.forEach((syms, i) => {
+  rows.forEach(syms => {
     const row = document.createElement("div"); row.className = "row";
     syms.forEach(sym => {
       const b = document.createElement("button"); b.innerHTML = A.pieces[sym];
@@ -94,14 +95,15 @@ function renderPalette(){
       b.onclick = () => { tool = (tool === sym) ? null : sym; renderPalette(); };
       row.appendChild(b);
     });
-    if (i === 1) {
-      const e = document.createElement("button"); e.className = "erase" + (tool === "erase" ? " on" : "");
-      e.textContent = "\u2715"; e.title = "Erase";
-      e.onclick = () => { tool = (tool === "erase") ? null : "erase"; renderPalette(); };
-      row.appendChild(e);
-    }
     pal.appendChild(row);
   });
+  // Erase: its own centred row, exactly two piece-buttons wide
+  const eraseRow = document.createElement("div"); eraseRow.className = "row center";
+  const e = document.createElement("button"); e.className = "erase" + (tool === "erase" ? " on" : "");
+  e.textContent = "\u2715"; e.title = "Erase";
+  e.onclick = () => { tool = (tool === "erase") ? null : "erase"; renderPalette(); };
+  eraseRow.appendChild(e);
+  pal.appendChild(eraseRow);
 }
 
 function emit(from, to, promo){
